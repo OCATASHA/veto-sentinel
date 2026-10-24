@@ -35,7 +35,9 @@ they block new orders locally, without making a network call on the order path.
 
 ## Quick start
 
-Fastest way to see it (works offline once installed; opens the dashboard in your browser):
+**SERVER SIDE WEBSITE ONGOING WORK**
+
+For now use: (works offline once installed; opens the dashboard in your browser):
 
 ```bash
 ./run_dashboard.sh   # DEMO: invented news, fully offline            -> http://127.0.0.1:8000
