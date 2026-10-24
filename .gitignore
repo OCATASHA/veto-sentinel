@@ -14,3 +14,6 @@ clients/cpp/build/
 *.duckdb.wal
 *.partial
 .DS_Store
+
+# personal notes, kept local
+ideas.txt
