@@ -47,6 +47,9 @@ STEP = timedelta(minutes=15)
 EPS = timedelta(seconds=1)
 MISSING_FINAL_AFTER = timedelta(hours=24)  # younger 404s may still appear, so they are retried
 LATE_GRACE = timedelta(hours=3)  # how long an announced file may stay undownloadable before it's skipped
+# Once files this much newer have arrived, a still-missing file stops holding back data_through
+# (it was probably skipped by GDELT); it is still collected if it turns up within LATE_GRACE.
+STOP_WAITING_AFTER = timedelta(minutes=60)
 
 
 class MissingFile(Exception):
@@ -73,7 +76,9 @@ class GdeltGkgLiveAdapter:
         self.client = client or httpx.Client(headers={"User-Agent": USER_AGENT}, timeout=timeout,
                                              follow_redirects=True)
         self.last_ts: datetime | None = None  # newest file announced and scheduled
-        self.pending: set[datetime] = set()  # announced but not downloadable yet
+        self.pending: set[datetime] = set()  # announced but not downloadable yet (holds back data_through)
+        self.late: set[datetime] = set()  # still missing, no longer holding back data_through
+        self.newest_ingested: datetime | None = None
         self.data_through: datetime | None = None  # all files up to here are ingested or given up
 
     # ------------------------------------------------------------------ files
@@ -138,12 +143,13 @@ class GdeltGkgLiveAdapter:
                 self.data_through = new[0] - STEP
         items: list[RawItem] = []
         errors = []
-        for ts in sorted(self.pending):
+        for ts in sorted(self.pending | self.late):
             try:
                 rows = self.rows(ts, md5 if ts == newest else None)
             except MissingFile:
                 if datetime.now(UTC) - ts > LATE_GRACE:
                     self.pending.discard(ts)
+                    self.late.discard(ts)
                     gaps.append((ts - EPS, ts + EPS))
                 continue
             except (httpx.HTTPError, ValueError) as e:
@@ -151,6 +157,13 @@ class GdeltGkgLiveAdapter:
                 continue
             items += self.items(rows, 1.0)
             self.pending.discard(ts)
+            self.late.discard(ts)
+            if self.newest_ingested is None or ts > self.newest_ingested:
+                self.newest_ingested = ts
+        if self.newest_ingested is not None:
+            stale = {ts for ts in self.pending if self.newest_ingested - ts >= STOP_WAITING_AFTER}
+            self.pending -= stale
+            self.late |= stale
         self.data_through = (min(self.pending) - STEP) if self.pending else self.last_ts
         if errors and not items:
             return FetchResult(ok=False, error="; ".join(errors)[:300])

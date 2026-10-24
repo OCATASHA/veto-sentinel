@@ -12,7 +12,10 @@ Rules, evaluated once per tick in this order (see docs/STATE_MACHINE.md):
      degraded:      any non-required component unavailable -> at least ``degraded_floor``
    If the target is more severe than the current state -> escalate immediately.
 4. De-escalation is one level at a time and only after the exit condition has held
-   continuously for ``cooldown_minutes`` of data time:
+   continuously for ``cooldown_minutes`` on the monitor's clock (simulated time in a replay, real
+   time live - live news arrives late and in batches, so news time would make the wait
+   unpredictable), and new news has been assessed since it started (live: new headlines arrived;
+   replay: news time moved on), so a stalled feed never counts as calm:
      HALT -> CAUTION    requires R < halt_exit and escalation target <= CAUTION
      CAUTION -> NORMAL  requires R < caution_exit and escalation target == NORMAL
    Any interruption of the exit condition resets the cooling-off timer.
@@ -44,6 +47,8 @@ class EngineInput:
     changepoint: ChangePointResult | None = None
     headline_ids: list[str] = field(default_factory=list)
     health: dict[str, Any] = field(default_factory=dict)
+    now: datetime | None = None  # monitor clock that times the cooling-off; defaults to as_of
+    news_seen: int | None = None  # live: headlines ingested so far (tells new news from a quiet feed)
 
 
 def _fmt(x: float | None) -> str:
@@ -54,7 +59,10 @@ class StateMachine:
     def __init__(self, cfg: StateMachineConfig, initial: RiskState = RiskState.HALT):
         self.cfg = cfg
         self.state = initial
-        self._exit_since: datetime | None = None
+        self._exit_since: datetime | None = None  # monitor-clock start of the current cooling-off
+        self._exit_news: float | None = None  # news marker (see _news_marker) when it started
+        self._last_news: float | None = None
+        self._exit_to: RiskState | None = None  # level the current cooling-off would relax to
         self._last_as_of: datetime | None = None
         self.flatten_info: dict[str, Any] | None = None
 
@@ -67,6 +75,7 @@ class StateMachine:
         if self._last_as_of is not None and inp.as_of < self._last_as_of:
             raise ValueError(f"as_of went backwards: {inp.as_of} < {self._last_as_of}")
         self._last_as_of = inp.as_of
+        self._last_news = self._news_marker(inp)
         prev = self.state
 
         if self.state is RiskState.FLATTEN:
@@ -92,14 +101,19 @@ class StateMachine:
                 self._exit_since = None
                 return self._record(inp, prev, prev, "hold",
                                     f"Holding {prev}: {exit_why}; {why}")
+            now = inp.now or inp.as_of
             if self._exit_since is None:
-                self._exit_since = inp.as_of
-            elapsed = inp.as_of - self._exit_since
-            if elapsed >= self.cooldown:
+                self._exit_since, self._exit_news = now, self._last_news
+            self._exit_to = nxt
+            elapsed = now - self._exit_since
+            if elapsed >= self.cooldown and self._has_newer_news():
                 self._exit_since = None
                 return self._transition(
                     inp, prev, nxt, "deescalate_after_cooldown",
                     f"{exit_why} for {elapsed} (cooldown {self.cooldown}); stepping {prev} -> {nxt}")
+            if elapsed >= self.cooldown:
+                return self._record(inp, prev, prev, "cooldown_pending",
+                                    f"{exit_why} for {elapsed}; waiting for newer news before {nxt}")
             remaining = self.cooldown - elapsed
             return self._record(inp, prev, prev, "cooldown_pending",
                                 f"{exit_why}; cooling off, {remaining} remaining before {nxt}")
@@ -146,6 +160,27 @@ class StateMachine:
         return RiskState.NORMAL, ok, (
             f"R={score:.2f} < caution_exit {c.caution_exit}" if ok
             else f"exit condition for CAUTION not met (R={score:.2f}, caution_exit {c.caution_exit}, target {target})")
+
+    @staticmethod
+    def _news_marker(inp: EngineInput) -> float:
+        """Grows when new news has been assessed: headline count if given (live), else news time."""
+        return float(inp.news_seen) if inp.news_seen is not None else inp.as_of.timestamp()
+
+    def _has_newer_news(self) -> bool:
+        return self._exit_news is not None and self._last_news is not None and self._last_news > self._exit_news
+
+    def cooldown_status(self, now: datetime) -> dict[str, Any] | None:
+        """Progress of the current cooling-off period at ``now`` on the monitor's clock, or None."""
+        if self._exit_since is None or self._exit_to is None or self.state is RiskState.FLATTEN:
+            return None
+        elapsed = now - self._exit_since
+        remaining = max(timedelta(0), self.cooldown - elapsed)
+        return {"next_state": str(self._exit_to), "started": self._exit_since.isoformat(),
+                "ends": (self._exit_since + self.cooldown).isoformat(),
+                "elapsed_s": elapsed.total_seconds(), "remaining_s": remaining.total_seconds(),
+                "total_s": self.cooldown.total_seconds(),
+                # no new news assessed since the start yet: it won't relax until there is
+                "needs_newer_news": not self._has_newer_news()}
 
     # ------------------------------------------------------------------ operator path
     def force_flatten(self, as_of: datetime, operator: str, reason: str) -> DecisionRecord:

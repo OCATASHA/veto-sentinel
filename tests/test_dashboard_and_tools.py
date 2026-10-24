@@ -142,3 +142,56 @@ def test_parse_gkg_filters_themes_and_titles():
 def test_gkg_file_times_sampling():
     ts = file_times(datetime(2023, 3, 10, 0, 7, tzinfo=UTC), datetime(2023, 3, 10, 2, tzinfo=UTC), 4)
     assert ts == [datetime(2023, 3, 10, 0, 0, tzinfo=UTC), datetime(2023, 3, 10, 1, 0, tzinfo=UTC)]
+
+
+# ---------------------------------------------------------------- server-side calm countdown
+def test_calm_countdown_is_kept_by_the_server():
+    from vetosentinel.dashboard.app import cooldown_json
+
+    s = Settings()
+    s.panic.backend, s.drift.backend = "lexicon", "hashing"
+    ctrl = ReplayController(s, "fixtures/synthetic_demo.jsonl", Store(":memory:"), Backends(s))
+    rt = Runtime(s, ctrl.store, ctrl)
+    ctrl.seek(datetime(2026, 2, 10, 16, 55, tzinfo=UTC))  # cooling off after the invented rate shock
+    cd = cooldown_json(rt)
+    assert cd is not None and cd["next_state"] == "CAUTION" and cd["rate"] == 0  # paused: clock stands still
+    assert cd["remaining_now_s"] == cd["remaining_s"] < cd["total_s"]
+    ctrl.speed, ctrl.playing = 600.0, True  # playing: the server advances it between replay steps
+    ctrl.last_step_mono -= 0.25
+    cd2 = cooldown_json(rt)
+    assert cd2 is not None and cd2["rate"] == 600 and cd2["remaining_s"] - cd2["remaining_now_s"] == pytest.approx(150, abs=5)
+    # status JSON carries the same object, so a page refresh shows the running value
+    status = TestClient(create_app(rt, auth=Auth(Credentials.from_password("u", "p"))))
+    status.post("/api/login", json={"username": "u", "password": "p"})
+    assert status.get("/api/status").json()["cooldown"]["started"] == cd["started"]
+
+
+# ---------------------------------------------------------------- "Optimize for"
+def test_optimize_for_preview_apply_audit_and_restart():
+    s = Settings()
+    s.panic.backend, s.drift.backend = "lexicon", "hashing"
+    ctrl = ReplayController(s, "fixtures/synthetic_demo.jsonl", Store(":memory:"), Backends(s))
+    rt = Runtime(s, ctrl.store, ctrl)
+    ctrl.seek(datetime(2026, 2, 10, 12, 0, tzinfo=UTC))
+    c = TestClient(create_app(rt, auth=Auth(Credentials.from_password("u", "p"))))
+    assert c.post("/api/focus/preview", json={"text": "banks"}).status_code == 401
+    c.post("/api/login", json={"username": "u", "password": "p"})
+    pv = c.post("/api/focus/preview", json={"text": "bank run, deposits", "background_weight": 0.1}).json()
+    assert pv["phrases"] == ["bank run", "deposits"] and pv["is_fallback"]  # keyword fallback (no MiniLM)
+    assert 0 < pv["effect"]["share"] < 1 and pv["top"] and all(0 < t["relevance"] <= 1 for t in pv["top"])
+    assert c.get("/api/status").json()["focus"]["text"] == ""  # previewing changes nothing
+    before = len(c.get("/api/history").json())
+    r = c.post("/api/focus", json={"text": "bank run, deposits", "background_weight": 0.1})
+    assert r.status_code == 200 and r.json()["set_by"] == "u" and r.json()["recompute_seconds"] >= 0
+    st = c.get("/api/status").json()
+    assert st["focus"]["text"] == "bank run, deposits" and st["focus"]["background_weight"] == 0.1
+    assert st["focus"]["effect"]["focus_multiplier"] > 1
+    assert all(h["relevance"] is not None for h in st["top_headlines"])
+    assert len(c.get("/api/history").json()) == before + 1  # re-assessed straight away
+    assert [e["kind"] for e in c.get("/api/control-events").json()][0] == "FOCUS_SET"
+    assert c.post("/api/focus", json={"text": "the, and"}).status_code == 400  # nothing to match
+    assert c.post("/api/focus", json={"text": "oil", "background_weight": 2}).status_code == 422
+    c.post("/api/replay/restart")
+    assert c.get("/api/status").json()["focus"]["text"] == "bank run, deposits"  # kept on restart
+    c.post("/api/focus", json={"text": ""})
+    assert c.get("/api/status").json()["focus"]["text"] == "" and st["focus"]["is_fallback"]

@@ -42,6 +42,16 @@ min_scale = { panic = 0.02, drift = 0.01, volume = 0.15 }
 weights = { panic = 0.4, drift = 0.3, volume = 0.3 }
 required_for_ready = ["volume"]
 
+[focus]
+# "Optimize for": weight news by relevance to what you trade (also settable in the dashboard).
+text = ""                        # e.g. "OPEC, crude oil supply, refineries, oil tankers"; "" = whole market
+background_weight = 0.05         # how much off-focus news still counts (a market-wide shock is still seen)
+z_mid = 3.0                      # similarity robust-z at which a headline is 50% relevant
+z_soft = 0.5
+min_scale = 0.02
+calibration_min = 300
+calibration_max = 5000
+
 [cusum]
 k = 1.0
 h = 6.0

@@ -40,6 +40,11 @@ class CusumDetector:
             return False
         return t - self.last_alarm_at <= timedelta(minutes=self.cfg.alarm_hold_minutes)
 
+    def hold(self, t: datetime) -> ChangePointResult:
+        """No new news time since the last update: report the statistic unchanged."""
+        return ChangePointResult(detector=self.name, statistic=self.s, threshold=self.cfg.h, alarm=False,
+                                 alarm_active=self._active(t), detail="no new news time; statistic unchanged")
+
     def update(self, t: datetime, x: float | None) -> ChangePointResult:
         if x is None or not math.isfinite(x):
             return ChangePointResult(detector=self.name, statistic=self.s, threshold=self.cfg.h,

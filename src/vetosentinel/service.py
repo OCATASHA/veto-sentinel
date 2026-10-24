@@ -91,6 +91,7 @@ class ReplayController:
         self.liveness = liveness or Liveness()
         self.lock = threading.RLock()
         self.speed = settings.replay.speed
+        self.last_step_mono = time.monotonic()
         self.playing = False
         self.finished = False
         self.tick = timedelta(minutes=settings.replay.tick_minutes)
@@ -147,6 +148,7 @@ class ReplayController:
                 return False
             self.clock.advance(self.tick)
             self.monitor.tick()
+            self.last_step_mono = time.monotonic()
             self.liveness.beat()
             return True
 
@@ -171,9 +173,14 @@ class ReplayController:
                 continue
             t0 = time.monotonic()
             self.step()
-            delay = self.tick.total_seconds() / self.speed - (time.monotonic() - t0)
-            if delay > 0:
-                stop.wait(min(delay, 1.0))
+            # Wait out the rest of this tick in short slices (stays responsive to pause/stop and
+            # to speed changes) instead of capping the wait, which made slow speeds run fast.
+            while not stop.is_set() and self.playing:
+                left = t0 + self.tick.total_seconds() / self.speed - time.monotonic()
+                if left <= 0:
+                    break
+                self.liveness.beat()
+                stop.wait(min(left, 0.2))
 
     def info(self) -> dict[str, Any]:
         now = self.clock.now()
@@ -243,6 +250,9 @@ class LiveController:
                 log.exception("monitor tick failed")
             self.liveness.beat()
             deadline = time.monotonic() + self.s.service.tick_seconds
+            cd = self.monitor.cooldown_status()
+            if cd is not None and cd["remaining_s"] > 0:  # tick right when a calm period ends
+                deadline = min(deadline, time.monotonic() + cd["remaining_s"] + 0.5)
             while not stop.is_set() and time.monotonic() < deadline:
                 self.liveness.beat()
                 stop.wait(0.5)

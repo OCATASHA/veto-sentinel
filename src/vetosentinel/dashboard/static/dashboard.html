@@ -26,6 +26,9 @@
     <span class="tm-time" id="topTime">–</span>
   </div>
   <div class="grow"></div>
+  <button class="focus-btn" id="focusBtn" type="button" aria-haspopup="dialog" title="Choose which news matters most for what you trade">
+    <span data-icon="target"></span><span class="fb-label">Optimize for</span><b id="focusName">Whole market</b>
+  </button>
   <label class="switch" title="Show the technical details behind every number">
     <input type="checkbox" id="expertToggle">
     <span class="track" aria-hidden="true"><span class="knob"></span></span>
@@ -79,6 +82,11 @@
           <h1 id="heroTitle">Connecting…</h1>
           <p class="lead" id="heroDesc">Fetching the latest assessment.</p>
           <ul class="why" id="heroWhy"></ul>
+          <div class="calm" id="calm" hidden>
+            <div class="calm-head"><span class="calm-ico" data-icon="clock"></span><b id="calmTitle"></b><span class="calm-time" id="calmTime"></span></div>
+            <div class="calm-track" id="calmTrack"><span id="calmBar"></span></div>
+            <p class="calm-note" id="calmNote"></p>
+          </div>
         </div>
       </article>
 
@@ -163,8 +171,9 @@
     </div>
     <div class="grid">
       <article class="card span-12">
-        <div class="card-head"><h2>Risk score over time</h2><span class="sub">simulated time · background colour = level at that moment</span></div>
-        <div class="chart-box big"><canvas id="bigChart" role="img" aria-label="Risk score over time with level shading"></canvas></div>
+        <div class="card-head"><h2>Risk score over time</h2><button class="btn ghost small" type="button" id="zoomReset" hidden>Reset zoom</button><span class="sub">simulated time · background colour = level at that moment</span></div>
+        <div class="chart-box big"><canvas id="bigChart" role="img" aria-label="Risk score over time with level shading. Click, then use the arrow keys to step through readings."></canvas></div>
+        <p class="caption">Scroll on the chart to zoom in, drag to move along, double-click to zoom out. Click it, then use ← → to step through every reading (Shift = one hour).</p>
         <div class="legend" id="bigLegend"></div>
         <div class="table-view" id="tableView" hidden></div>
       </article>
@@ -181,7 +190,8 @@
       <div class="tiles span-12" id="newsTiles"></div>
       <article class="card span-12">
         <div class="card-head"><h2>Headlines pushing negativity up</h2><button class="help" type="button" data-help="headlines" aria-label="About these headlines">?</button></div>
-        <p class="caption top">The most negative headlines from the last hour, as scored by the AI. A longer, redder bar means the headline sounds more negative.</p>
+        <p class="caption top" id="newsCaption">The most negative headlines from the last hour, as scored by the AI. A longer, redder bar means the headline sounds more negative.</p>
+        <p class="caption top" id="newsFresh" hidden></p>
         <ul class="headlines" id="headlines"></ul>
       </article>
     </div>
@@ -257,7 +267,7 @@
           </div>
         </div>
       </article>
-      <article class="card span-12">
+      <article class="card span-12" id="eventsCard">
         <div class="card-head"><h2>Jump to an event</h2><span class="sub">fast-forwards to 2 hours before it starts</span></div>
         <div class="events" id="events"></div>
       </article>
@@ -317,6 +327,40 @@
     </div>
   </section>
 </main>
+
+<dialog class="focus-dlg" id="focusDlg" aria-labelledby="focusTitle">
+  <div class="fd">
+    <header class="fd-head">
+      <span class="fd-ico" data-icon="target"></span>
+      <div>
+        <h2 id="focusTitle">Optimize for…</h2>
+        <p>Tell Veto Sentinel what you trade. Headlines about it count fully; other news counts only a little, so a market-wide crash is still noticed.</p>
+      </div>
+      <button class="icon-btn" type="button" id="focusClose" aria-label="Close" data-icon="x"></button>
+    </header>
+    <div class="fd-presets" id="focusPresets" role="group" aria-label="Examples"></div>
+    <label class="fd-field"><span>Topics, separated by commas</span>
+      <input type="text" id="focusText" maxlength="300" autocomplete="off" spellcheck="false" placeholder="e.g. OPEC, crude oil supply, refineries, oil tankers">
+    </label>
+    <label class="fd-field"><span>Other news still counts <b id="focusBgVal">5%</b></span>
+      <input type="range" id="focusBg" min="0" max="30" step="1" value="5">
+    </label>
+    <section class="fd-preview" id="focusPreview" aria-live="polite">
+      <div class="fd-stats" id="focusStats"></div>
+      <div class="fd-dist" id="focusDist" hidden></div>
+      <p class="fd-key" id="focusKey"></p>
+      <h3 class="small-h" id="focusTopH" hidden>Best matches in the last day</h3>
+      <ul class="fd-top" id="focusTop"></ul>
+      <p class="caption" id="focusNote"></p>
+      <p class="caption x mono" id="focusCalib"></p>
+    </section>
+    <footer class="fd-foot">
+      <span class="caption" id="focusMethod"></span>
+      <button class="btn ghost" type="button" id="focusReset">Use whole market</button>
+      <button class="btn primary" type="button" id="focusApply">Apply</button>
+    </footer>
+  </div>
+</dialog>
 
 <div class="toasts" id="toasts" aria-live="polite" aria-atomic="false"></div>
 <div class="popover" id="popover" role="dialog" aria-modal="false" hidden><p id="popoverText"></p></div>

@@ -63,6 +63,7 @@ def status_to_body(st: MonitorStatus, cfg: BusConfig) -> dict[str, Any]:
         "data_origin": st.data_origin, "implementations": impls,
         "fallback_in_use": any(v["is_fallback"] for v in st.implementations.values()),
         "control": st.control,
+        "focus": st.focus.get("text") or None,
     }
 
 

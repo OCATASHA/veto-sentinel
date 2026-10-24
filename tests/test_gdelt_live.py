@@ -225,3 +225,53 @@ def test_monitor_assesses_at_complete_data_time_and_flags_big_lags():
     assert any("min behind" in r for r in d.health["not_ready_reasons"]) and d.new_state.value == "HALT"
     src.data_through = NEWEST - timedelta(hours=5)  # a source must never move assessment backwards
     assert mon.eval_time(clock.now()) == NEWEST - timedelta(minutes=45)
+
+
+def test_a_skipped_file_stops_freezing_the_clock_once_newer_news_arrives(tmp_path):
+    t0 = recent_slot(120)
+    fake = FakeGdelt(newest=t0)
+    a = adapter(tmp_path, fake)
+    a.fetch(t0)
+    gap_file = t0 + timedelta(minutes=15)
+    fake.missing = {gap_file}
+    fake.newest = t0 + timedelta(minutes=45)
+    a.fetch(fake.newest)
+    assert a.data_through == t0  # still waiting: newer files are less than an hour newer
+    fake.newest = t0 + timedelta(minutes=75)
+    a.fetch(fake.newest)
+    assert a.data_through == fake.newest  # an hour of newer news arrived: stop waiting
+    assert gap_file in a.late
+    fake.missing = set()  # the late file finally appears: still collected
+    r = a.fetch(fake.newest)
+    assert len(r.items) == 3 and not a.late
+
+
+def test_live_calm_countdown_is_real_time_and_waits_for_newer_news(tmp_path):
+    from types import SimpleNamespace
+
+    from vetosentinel.dashboard.app import cooldown_json
+
+    s = Settings()
+    s.panic.backend, s.drift.backend = "lexicon", "hashing"
+    fake = FakeGdelt(newest=NEWEST)
+    a = adapter(tmp_path, fake, backfill_days=8)
+    clock = SimClock(NEWEST + timedelta(minutes=5))
+    mon = Monitor(s, Store(":memory:"), FeaturePipeline(s, LexiconSentiment(), HashingEmbedder(64)),
+                  [AdapterRunner(a, poll_seconds=60)], clock, mode="live", data_origin="live_provider")
+    mon.ingest_result(mon.adapters[0], a.backfill(clock.now()), clock.now())
+    mon.warm_up(clock.now() - timedelta(days=7), clock.now())
+    d = mon.tick()
+    assert d.rule == "cooldown_pending", d.reason  # calm news: the startup HALT starts cooling off
+    rt = SimpleNamespace(controller=SimpleNamespace(monitor=mon))  # a live controller (no restart())
+    clock.advance(timedelta(minutes=10))
+    cd = cooldown_json(rt)  # exact on the real clock, even though no new GDELT file has arrived
+    assert cd is not None and cd["remaining_now_s"] == cd["remaining_s"] == 1200 and cd["rate"] == 1
+    clock.advance(timedelta(minutes=21))  # 31 minutes, still no newer file: don't treat silence as calm
+    d = mon.tick()
+    assert d.new_state.value == "HALT" and "waiting for newer news" in d.reason
+    cd = cooldown_json(rt)
+    assert cd is not None and cd["needs_newer_news"]
+    fake.newest = NEWEST + timedelta(minutes=15)  # GDELT catches up with calm news
+    clock.advance(timedelta(minutes=2))
+    d = mon.tick()
+    assert d.new_state.value == "CAUTION" and d.rule == "deescalate_after_cooldown"

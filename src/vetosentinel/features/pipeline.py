@@ -6,13 +6,20 @@ Contract:
   simply do not contribute to that component and the failure is reported in diagnostics.
   ``compute(t)`` returns a ``RiskSnapshot`` with raw values, z-scores, sample counts, baseline
   status and implementation labels for every component. It never emits NaN/inf.
+  ``set_focus(text)`` ("Optimize for") weights every headline by its relevance to the focus
+  (see relevance.py): retained headlines are re-weighted and the z-score baselines rebuilt, so
+  they always use the same weights as the current reading.
 """
 
 from __future__ import annotations
 
+import bisect
 import logging
 import math
 from datetime import datetime, timedelta
+from typing import Any
+
+import numpy as np
 
 from vetosentinel.config import Settings
 from vetosentinel.features.backends import EmbeddingBackend, SentimentBackend
@@ -21,6 +28,7 @@ from vetosentinel.features.drift import DriftTracker
 from vetosentinel.features.intensity import IntensityTracker
 from vetosentinel.features.normalize import RollingNormalizer
 from vetosentinel.features.panic import PanicAggregator
+from vetosentinel.features.relevance import RelevanceModel, parse_focus
 from vetosentinel.models import ComponentReading, Headline, RiskSnapshot
 
 log = logging.getLogger(__name__)
@@ -31,8 +39,9 @@ class FeaturePipeline:
         self.s = settings
         self.sentiment = sentiment
         self.embedder = embedder
-        self.panic = PanicAggregator(settings.panic,
-                                     retention=timedelta(minutes=settings.panic.window_minutes) + timedelta(hours=1))
+        # Panic rows are kept for the whole baseline period so a focus change can recompute it.
+        self.panic = PanicAggregator(settings.panic, retention=timedelta(days=settings.normalizer.baseline_days)
+                                     + timedelta(minutes=settings.panic.window_minutes) + timedelta(hours=2))
         self.drift = DriftTracker(settings.drift, embedder.dim)
         self.intensity = IntensityTracker(settings.intensity, settings.normalizer)
         self.norm = {"panic": RollingNormalizer("panic", settings.normalizer),
@@ -42,6 +51,15 @@ class FeaturePipeline:
         self.last_model_error = ""
         self.invalid_sentiment = 0
         self.origins: set[str] = set()
+        # Focus ("Optimize for"): retained headlines (time order) so their weights can be redone.
+        self.focus: RelevanceModel | None = None
+        self._items_t: list[datetime] = []
+        self._items: list[tuple[str, str, np.ndarray | None, float]] = []  # (id, text, vector, count weight)
+        self._rel: dict[str, float] = {}  # relevance r of each retained headline (with a focus)
+        self._needs_rebuild = False
+        self._effect_cache: tuple[Any, dict[str, Any]] | None = None
+        if settings.focus.text.strip():
+            self.set_focus(settings.focus.text, settings.focus.background_weight)
 
     @property
     def implementations(self) -> dict[str, dict]:
@@ -77,21 +95,159 @@ class FeaturePipeline:
             log.error("embedding failed: %s", self.last_model_error)
             embs = None
 
+        vecs: list[np.ndarray | None] = [None] * len(headlines) if embs is None else list(embs)
+        self._remember(headlines, vecs)
+        f = self.focus
+        if f is not None and f.calibrated:
+            for h, r in zip(headlines, f.relevance(texts, vecs), strict=True):
+                self._rel[h.headline_id] = float(r)
+        weights = [self.weight(h.headline_id) for h in headlines]
         scored: dict[str, float] = {}
         for i, h in enumerate(headlines):
             self.origins.add(str(h.data_origin))
-            self.intensity.add(h.event_time, h.count_weight)
+            self.intensity.add(h.event_time, h.count_weight, weights[i], h.headline_id)
             if probs is not None:
                 p = float(probs[i])
-                if self.panic.add(h.event_time, p, h.source_weight, h.headline_id):
+                if self.panic.add(h.event_time, p, h.source_weight, h.headline_id, weights[i]):
                     scored[h.headline_id] = p
                 else:
                     self.invalid_sentiment += 1
         if embs is not None:
-            self.drift.add_many([(h.event_time, embs[i]) for i, h in enumerate(headlines)])
+            self.drift.add_many([(h.event_time, embs[i], weights[i], h.headline_id) for i, h in enumerate(headlines)])
         return scored
 
+    # ------------------------------------------------------------------ focus ("Optimize for")
+    def weight(self, headline_id: str) -> float:
+        """How much a headline counts: 1 without a focus, else b + (1 - b) * relevance."""
+        f = self.focus
+        if f is None or not f.calibrated:
+            return 1.0
+        return f.background + (1.0 - f.background) * self._rel.get(headline_id, 0.0)
+
+    def relevance_of(self, headline_id: str) -> float | None:
+        return self._rel.get(headline_id) if self.focus is not None and self.focus.calibrated else None
+
+    def _remember(self, headlines: list[Headline], vecs: list[np.ndarray | None]) -> None:
+        for h, v in zip(headlines, vecs, strict=True):
+            i = bisect.bisect_right(self._items_t, h.event_time)
+            self._items_t.insert(i, h.event_time)
+            self._items.insert(i, (h.headline_id, h.headline, None if v is None else np.asarray(v, dtype=np.float16),
+                                   h.count_weight))
+        f = self.focus
+        if f is not None and not f.calibrated and f.calibrate(self._vectors()):
+            self._apply_focus()  # first calibration: weights change for everything seen so far
+            self._needs_rebuild = True
+
+    def _vectors(self) -> np.ndarray:
+        """Vectors of retained headlines, oldest first (for calibration)."""
+        vs = [v for _, _, v, _ in self._items if v is not None]
+        return np.stack(vs).astype(np.float32) if vs else np.zeros((0, self.embedder.dim), dtype=np.float32)
+
+    def _model(self, text: str, background: float | None) -> RelevanceModel | None:
+        if not parse_focus(text):
+            return None
+        cfg = self.s.focus.model_copy(update={"background_weight": self.s.focus.background_weight
+                                              if background is None else float(background)})
+        model = RelevanceModel(text, cfg, self.embedder)
+        model.calibrate(self._vectors())
+        return model
+
+    def _apply_focus(self) -> None:
+        """Recompute every retained headline's relevance and re-weight all trackers."""
+        f = self.focus
+        self._rel = {}
+        if f is not None and f.calibrated and self._items:
+            r = f.relevance([x[1] for x in self._items], [x[2] for x in self._items])
+            self._rel = {x[0]: float(ri) for x, ri in zip(self._items, r, strict=True)}
+        self.panic.reweight(self.weight)
+        self.drift.reweight(self.weight)
+        self.intensity.reweight(self.weight)
+        self._effect_cache = None
+
+    def set_focus(self, text: str, background: float | None = None,
+                  rebuild_until: datetime | None = None) -> dict[str, Any]:
+        """Optimize for ``text`` ("" = whole market). With ``rebuild_until`` the z-score baselines
+        are recomputed up to (not including) that time with the new weights."""
+        if background is not None and not 0.0 <= background <= 1.0:
+            raise ValueError("background weight must be between 0 and 1")
+        self.focus = self._model(text, background)
+        self.s.focus.text = self.focus.text if self.focus else ""
+        if background is not None:
+            self.s.focus.background_weight = float(background)
+        self._apply_focus()
+        if rebuild_until is not None:
+            self.rebuild_baselines(rebuild_until)
+        return self.focus_info()
+
+    def reset_baselines(self) -> None:
+        self.norm = {name: RollingNormalizer(name, self.s.normalizer) for name in self.norm}
+        self._needs_rebuild = False
+
+    def rebuild_baselines(self, until: datetime, step: timedelta = timedelta(minutes=10)) -> int:
+        """Recompute the panic/drift z-score history over the baseline period before ``until``
+        (exclusive) from retained headlines, with the current weights. Returns the step count."""
+        self.reset_baselines()
+        if not self._items_t:
+            return 0
+        span = timedelta(days=self.s.normalizer.baseline_days, minutes=self.s.normalizer.baseline_gap_minutes)
+        start = max(self._items_t[0], until - span)
+        k = int((until - start) / step)
+        n = 0
+        for i in range(k, 0, -1):  # on a grid that ends one step before ``until``
+            self.compute(until - i * step)
+            n += 1
+        return n
+
+    def preview_focus(self, text: str, background: float | None, now: datetime | None = None,
+                      top_n: int = 8) -> dict[str, Any]:
+        """What ``set_focus`` would do, without applying it: matches among the last day's news."""
+        model = self._model(text, background)
+        if model is None:
+            return {"text": "", "phrases": []}
+        info = model.info()
+        if not model.calibrated:
+            n = len(self._vectors())
+            return {**info, "effect": None, "top": [], "histogram": [],
+                    "note": f"needs {model.cfg.calibration_min} headlines to calibrate (has {n})"}
+        recent, hours = self._recent(now)
+        r = model.relevance([x[1] for x in recent], [x[2] for x in recent])
+        top = []
+        for i in np.argsort(-r)[:top_n]:
+            if r[i] <= 0:
+                break
+            v = recent[i][2]
+            z = float(model.z(model.similarity(v[None, :]))[0]) if model.semantic and v is not None else None
+            top.append({"headline": recent[i][1], "relevance": float(r[i]), "z": z})
+        hist = np.histogram(r, bins=[0, 0.1, 0.5, 0.9, 1.0001])[0].tolist() if len(r) else []
+        return {**info, "effect": model.effect(r, np.asarray([x[3] for x in recent]), hours),
+                "top": top, "histogram": hist}
+
+    def _recent(self, now: datetime | None, hours: float = 24.0) -> tuple[list, float]:
+        """Retained headlines of the last ``hours`` before ``now`` (default: the newest one), and
+        the hours they actually span (shorter right after a start)."""
+        if not self._items_t:
+            return [], hours
+        end = now or self._items_t[-1]
+        i = bisect.bisect_right(self._items_t, end - timedelta(hours=hours))
+        j = bisect.bisect_right(self._items_t, end)
+        span = (end - self._items_t[i]).total_seconds() / 3600 if i < j else hours
+        return self._items[i:j], min(hours, max(1.0, span))
+
+    def focus_info(self, now: datetime | None = None) -> dict[str, Any]:
+        f = self.focus
+        if f is None:
+            return {"text": "", "phrases": [], "background_weight": self.s.focus.background_weight}
+        recent, hours = self._recent(now)
+        key = (id(f), len(self._items), recent[-1][0] if recent else None)
+        if self._effect_cache is None or self._effect_cache[0] != key:  # status is polled every second
+            r = np.asarray([self._rel.get(x[0], 0.0) for x in recent])
+            eff = f.effect(r, np.asarray([x[3] for x in recent]), hours) if f.calibrated else None
+            self._effect_cache = (key, eff or {})
+        return {**f.info(), "effect": self._effect_cache[1] or None}
+
     def compute(self, t: datetime) -> RiskSnapshot:
+        if self._needs_rebuild:
+            self.rebuild_baselines(t)
         impl = self.implementations
         readings: dict[str, ComponentReading] = {}
 
@@ -130,3 +286,10 @@ class FeaturePipeline:
         self.panic.prune(t)
         self.drift.prune(t)
         self.intensity.prune(t)
+        cutoff = t - timedelta(days=self.s.intensity.lookback_days + 2)  # the longest any tracker keeps
+        i = bisect.bisect_left(self._items_t, cutoff)
+        if i > 256:
+            for hid, *_ in self._items[:i]:
+                self._rel.pop(hid, None)
+            del self._items_t[:i]
+            del self._items[:i]

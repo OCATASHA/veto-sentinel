@@ -15,6 +15,10 @@ Scale protection: besides ``min_scale``, the scale is floored at the Poisson cou
 noise of the baseline level, 1/sqrt(1 + median count) in log1p units, because a few
 history days can show spuriously low dispersion (especially at quiet hours).
 
+Focus (relevance.py): each headline counts c * w (c = count weight, w = relevance weight), i.e.
+the expected number of headlines about the focus. Treating relevance as Poisson thinning, that
+count is again Poisson, so the same scale floor applies to the weighted counts.
+
 Missing history: a baseline day is used only if its whole window lies inside the
 observed coverage and does not overlap a recorded ingestion gap. The current window must
 also be fully covered. Fewer than ``min_history_days`` usable days -> not ready.
@@ -25,6 +29,7 @@ from __future__ import annotations
 
 import bisect
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -52,7 +57,9 @@ class IntensityTracker:
         self.norm = norm
         self.tz = ZoneInfo(cfg.baseline_timezone)
         self._t: list[datetime] = []
-        self._w: list[float] = []
+        self._w: list[float] = []  # count weight * relevance weight
+        self._base: list[float] = []  # count weight alone
+        self._hid: list[str | None] = []
         self._weighted = False  # all weights 1 -> plain bisect counting
         self._cum: np.ndarray | None = None
         self.coverage_start: datetime | None = None
@@ -66,15 +73,23 @@ class IntensityTracker:
         if end > start:
             self.gaps.append((start, end))
 
-    def add(self, t: datetime, weight: float = 1.0) -> None:
+    def add(self, t: datetime, weight: float = 1.0, rel: float = 1.0, hid: str | None = None) -> None:
         # Coverage is set explicitly by the monitor (fixture start, first successful live fetch,
         # or a declared backfill): stray old items (e.g. an RSS feed's last N entries) must not
         # make earlier days look like genuinely observed low-volume history.
         i = bisect.bisect_right(self._t, t)
         self._t.insert(i, t)
-        self._w.insert(i, weight)
-        if weight != 1.0:
+        self._w.insert(i, weight * rel)
+        self._base.insert(i, weight)
+        self._hid.insert(i, hid)
+        if weight * rel != 1.0:
             self._weighted = True
+        self._cum = None
+
+    def reweight(self, rel: Callable[[str], float]) -> None:
+        """Replace every headline's relevance weight (when the focus changes)."""
+        self._w = [c if h is None else c * rel(h) for c, h in zip(self._base, self._hid, strict=True)]
+        self._weighted = any(w != 1.0 for w in self._w)
         self._cum = None
 
     def prune(self, now: datetime) -> None:
@@ -83,6 +98,8 @@ class IntensityTracker:
         if i:
             del self._t[:i]
             del self._w[:i]
+            del self._base[:i]
+            del self._hid[:i]
             self._cum = None
         self.gaps = [g for g in self.gaps if g[1] >= cutoff]
 

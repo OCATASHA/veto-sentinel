@@ -83,6 +83,7 @@ class BusMessage(BaseModel):
     implementations: dict[str, str]
     fallback_in_use: StrictBool
     control: dict[str, Any] | None = None
+    focus: str | None = Field(default=None, max_length=300)  # "Optimize for" phrases; None = whole market
 
     @field_validator("ts", "as_of", mode="before")
     @classmethod

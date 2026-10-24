@@ -28,6 +28,7 @@ Every message (`STATE`, `HEARTBEAT`, `CONTROL`) carries a **complete snapshot**:
 | `implementations` | {component: id} | e.g. `finbert:ProsusAI/finbert` or `fallback-lexicon-v1` |
 | `fallback_in_use` | bool | true if any component uses a fallback heuristic |
 | `control` | object or null | last operator event, with `"automatic_execution": false` |
+| `focus` | string or null | what the risk score is optimized for (comma-separated phrases); null = whole market |
 
 Unknown extra fields are ignored, which keeps the format forward compatible. A missing or
 mistyped required field invalidates the message. Strict types are enforced: `"seq": "7"`

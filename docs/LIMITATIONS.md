@@ -49,6 +49,17 @@ This is a hackathon prototype. Each item below is a known gap, not a hidden one.
 - The drift bias correction makes D unbiased in expectation but noisy for small windows. D is an
   estimate and can be slightly negative.
 
+## Optimize for (relevance)
+- Relevance is similarity to a few phrases, not a validated classifier. The calibration assumes
+  most headlines are off-topic: for a very broad focus ("markets") only the most typical
+  matches count fully. The z_mid = 3, z_soft = 0.5 and background 0.05 defaults are unvalidated
+  starting parameters, chosen by inspecting one day of live headlines.
+- A narrow focus can leave only a few effective headlines per hour. The z-scores stay calibrated
+  against their own (noisier) baseline, but the focused signal is jumpier.
+- After a focus change, live drift values early in the rebuilt week use a shorter reference
+  window, because vectors are only kept for 7 days + 2 hours.
+- The keyword fallback (no MiniLM) only matches literal words and stems.
+
 ## Statistics
 - CUSUM assumes roughly independent observations. Overlapping rolling windows violate this, so `h`
   is not a calibrated false-alarm rate.

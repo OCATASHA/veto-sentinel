@@ -58,10 +58,10 @@ class Headline(BaseModel):
     event_time: datetime
     timestamp_quality: TimestampQuality
     language: str = "und"
-    source_weight: float = Field(1.0, gt=0)
+    source_weight: float = Field(default=1.0, gt=0)
     # How many headlines this one stands for in the news-volume count (an hourly archive sample
     # stands for four 15-minute files). Does not affect negativity or topic averages.
-    count_weight: float = Field(1.0, gt=0)
+    count_weight: float = Field(default=1.0, gt=0)
     provider: str
     data_origin: DataOrigin
 

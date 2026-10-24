@@ -21,6 +21,7 @@ they block new orders locally, without making a network call on the order path.
  features  P(t) panic      FinBERT p(negative), source-weighted       [fallback: lexicon heuristic]
            D(t) drift      MiniLM centroid cosine distance, 1h vs 7d  [fallback: hashing embedder]
            V(t) intensity  unique count vs same-time-of-day baseline
+           optional "Optimize for": every headline weighted by relevance to your focus (MiniLM similarity)
    ▼
  rolling robust z-scores ─► R(t) = w_p·z(P) + w_d·z(D) + w_v·z(V)   (+ explicit degraded-data policy)
    ▼
@@ -123,6 +124,18 @@ thresholds). Clients start in `HALT` and need `recovery_snapshots_required` (def
 consecutive valid, fresh, in-sequence snapshots before they adopt the published state.
 See [docs/DESIGN.md](docs/DESIGN.md) and [docs/MESSAGE_SCHEMA.md](docs/MESSAGE_SCHEMA.md).
 
+## Optimize for (relevance weighting)
+
+By default every finance headline counts the same. In the dashboard, **Optimize for** (top bar)
+takes a few comma-separated topics, such as "OPEC, crude oil supply, refineries, oil tankers", or
+a preset. Each headline gets a relevance score: MiniLM similarity to the topics, compared with a
+typical headline. Matching news counts fully and other news at 5% (adjustable), so a market-wide
+crash still shows. The 7-day baselines are recomputed with the same weights, so the score still
+compares like with like. The preview shows which recent headlines match and how much more (or
+less) each kind of news moves the score. The change is logged and broadcast to clients
+(`focus` field). It can also be set in config (`[focus] text`). The maths is in
+[docs/DESIGN.md §2b](docs/DESIGN.md).
+
 ## Safety boundaries (enforced by design)
 
 - No broker or exchange connectivity. No order submission. No automatic liquidation.
@@ -150,6 +163,11 @@ See [docs/EVALUATION.md](docs/EVALUATION.md). In short:
   after the chosen onset, and the first evidence-based HALT about 98 h after onset (the 12 Mar
   policy-response weekend). The fail-safes (data gap, warm-up) worked as designed. Likely cause:
   dilution across all finance headlines. Full analysis in the document.
+- **Same replay, Optimize for "Banks & credit"** (preset written before the run, nothing tuned
+  afterwards): the first evidence-based HALT moved from ~98 h to ~36 h after onset (Friday
+  10 Mar, before SVB was closed), peak R rose from 2.35 to 3.78, and there were fewer alarms in
+  the week before. There is still no signal on the 9 Mar share collapse itself. One event, not a
+  validation.
 
 ## Repository layout
 

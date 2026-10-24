@@ -162,3 +162,5 @@ def test_security_headers(client):
         assert "frame-ancestors 'none'" in h["content-security-policy"]
         assert h["x-content-type-options"] == "nosniff" and h["x-frame-options"] == "DENY"
     assert client.get("/api/health").headers["cache-control"] == "no-store"
+    for path in ("/", "/static/dashboard.js", "/static/dashboard.css"):
+        assert client.get(path).headers["cache-control"] == "no-cache", path

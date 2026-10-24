@@ -147,6 +147,8 @@ def evaluate(settings: Settings, fixture: str, out_dir: str | None = None,
             "HISTORICAL REPLAY: results depend on the dataset's coverage and timestamps. Parameters are "
             "unvalidated starting parameters; they must not be tuned on the event windows reported here."),
         "parameter_status": settings.parameter_status,
+        "focus": {"text": settings.focus.text, "background_weight": settings.focus.background_weight}
+        if settings.focus.text else None,
         "fixture": {"path": fixture, "sha256": _sha256(fixture), "title": meta.title,
                     "items": len(ctrl.adapter), "declared_gaps": meta.raw.get("gaps", []),
                     "caveats": meta.raw.get("caveats", [])},
@@ -196,6 +198,8 @@ def to_markdown(r: dict[str, Any]) -> str:
     banner = "SYNTHETIC DEMO DATA - NOT OBSERVED HISTORY" if r["synthetic"] else f"Data origin: {r['data_origin']}"
     L += [f"> **{banner}**", ">", f"> {r['disclaimer']}", "",
           f"- Parameters: **{r['parameter_status']}**",
+          (f"- Optimize for: **{r['focus']['text']}** (other news weight {r['focus']['background_weight']})"
+           if r.get("focus") else "- Optimize for: whole market (every headline weighted equally)"),
           f"- Fixture: `{r['fixture']['path']}` (sha256 `{r['fixture']['sha256'][:16]}...`, {r['fixture']['items']} items)",
           *[f"- Fixture caveat: {c}" for c in r["fixture"]["caveats"]],
           *[f"- Declared data gap: {g['start']} -> {g['end']} ({g.get('reason', '')})" for g in r["fixture"]["declared_gaps"]],

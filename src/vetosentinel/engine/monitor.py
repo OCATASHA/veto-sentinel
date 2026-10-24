@@ -23,7 +23,7 @@ from vetosentinel.features.pipeline import FeaturePipeline
 from vetosentinel.ingest.base import AdapterRunner, FetchResult
 from vetosentinel.ingest.dedup import Deduplicator
 from vetosentinel.ingest.normalize import NormalizationError, normalize_item
-from vetosentinel.models import DecisionRecord, Headline, RiskSnapshot, RiskState
+from vetosentinel.models import ChangePointResult, DecisionRecord, Headline, RiskSnapshot, RiskState
 from vetosentinel.store import Store
 from vetosentinel.timeutil import Clock, utcnow
 
@@ -46,6 +46,7 @@ class MonitorStatus:
     counters: dict[str, int]
     flatten: dict[str, Any] | None
     control: dict[str, Any] | None = None
+    focus: dict[str, Any] = field(default_factory=dict)
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -79,6 +80,8 @@ class Monitor:
         self._last_ingest_success: datetime | None = None
         self._outage_start: datetime | None = None
         self._last_eval: datetime | None = None
+        self._cp_t: datetime | None = None  # news time of the last CUSUM update
+        self._focus_meta: dict[str, Any] = {}
         if coverage_start is not None:
             pipeline.intensity.set_coverage_start(coverage_start)
         store.start_run(self.run_id, mode, data_origin, settings.model_dump(mode="json"),
@@ -162,6 +165,11 @@ class Monitor:
             return [f"news ingestion stale: last successful fetch {age} ago"]
         return []
 
+    def cooldown_status(self) -> dict[str, Any] | None:
+        """Current cooling-off progress on the monitor's clock (exact to the second in live mode)."""
+        with self.lock:
+            return self.sm.cooldown_status(self.clock.now())
+
     def eval_time(self, now: datetime) -> datetime:
         """Time the news is assessed at: now, or - if a source reports how far its data is complete
         (GDELT publishes with a lag) - that point, so late news is never mistaken for a quiet hour.
@@ -175,6 +183,7 @@ class Monitor:
         ready at the first live tick. Touches no state machine, store or bus. Returns the step count."""
         n = 0
         with self.lock:
+            self.pipeline.reset_baselines()  # the warm-up builds them from scratch
             t = start
             while t < end:
                 self.pipeline.compute(t)
@@ -198,7 +207,7 @@ class Monitor:
             if ingest_problems:
                 snap = snap.model_copy(update={
                     "monitor_ready": False, "not_ready_reasons": snap.not_ready_reasons + ingest_problems})
-            cp = self.detector.update(t_eval, snap.risk_score if snap.monitor_ready else None)
+            cp = self._changepoint(t_eval, snap.risk_score if snap.monitor_ready else None)
             comps = {k: (v.z if v.available else None) for k, v in snap.components.items()}
             health = {"implementations": self.pipeline.implementations,
                       "model_errors": {"sentiment": self.pipeline.sentiment_errors,
@@ -209,7 +218,8 @@ class Monitor:
                 as_of=t_eval, risk_score=snap.risk_score, monitor_ready=snap.monitor_ready, components=comps,
                 not_ready_reasons=snap.not_ready_reasons, degraded=snap.degraded,
                 degraded_reasons=snap.degraded_reasons, changepoint=cp,
-                headline_ids=snap.top_headline_ids, health=health))
+                headline_ids=snap.top_headline_ids, health=health, now=now,
+                news_seen=self.counters["headlines"] if self.mode == "live" else None))
             self.store.add_tick(self.run_id, snap, decision, cp.statistic, cp.alarm_active)
             self._last_snapshot, self._last_decision = snap, decision
             self.counters["ticks"] += 1
@@ -224,9 +234,60 @@ class Monitor:
             self._notify("STATE")
         return decision
 
+    def _changepoint(self, t: datetime, x: float | None) -> ChangePointResult:
+        """Update CUSUM once per replay tick (5 min) of news time. Live news time stands still
+        between batches and then jumps, so updating on every 60 s tick would re-add the same
+        reading many times; a jump of several steps adds it once per step (at most an hour)."""
+        grid = timedelta(minutes=self.s.replay.tick_minutes)
+        if self._cp_t is None:
+            steps = 1
+        else:
+            steps = min(int((t - self._cp_t) / grid), 12)
+            if steps <= 0:
+                return self.detector.hold(t)
+        cp = self.detector.update(t, x)
+        for _ in range(steps - 1):
+            if cp.alarm:
+                break
+            cp = self.detector.update(t, x)
+        self._cp_t = t if self._cp_t is None or steps == 12 else self._cp_t + steps * grid
+        return cp
+
     def _prune_headline_cache(self, now: datetime) -> None:
         cutoff = now - timedelta(days=1)
         self._headline_cache = {k: h for k, h in self._headline_cache.items() if h.event_time >= cutoff}
+
+    # ------------------------------------------------------------------ focus ("Optimize for")
+    def set_focus(self, text: str, background: float | None, operator: str) -> dict[str, Any]:
+        """Weight news by relevance to ``text`` ("" = whole market). Rebuilds the baselines with
+        the new weights, logs the change, and re-assesses immediately (escalation is immediate;
+        relaxing still needs the usual calm period)."""
+        with self.lock:
+            until = self._last_eval
+            t0 = utcnow()
+            info = self.pipeline.set_focus(text, background, rebuild_until=until)
+            self._focus_meta = {"set_by": operator, "set_at": utcnow().isoformat(),
+                                "as_of": until.isoformat() if until else None,
+                                "recompute_seconds": round((utcnow() - t0).total_seconds(), 2)}
+            self.store.add_control_event(self.run_id, utcnow(), "FOCUS_SET", operator,
+                                         {"text": info.get("text", ""),
+                                          "background_weight": self.s.focus.background_weight})
+            self._last_control = {"event": "FOCUS_SET", "operator": operator, "at": utcnow().isoformat(),
+                                  "text": info.get("text", ""), "automatic_execution": False}
+            log.info("focus set by %s: %r (background %.2f)", operator, info.get("text") or "whole market",
+                     self.s.focus.background_weight)
+        if until is not None:
+            self.tick()
+        self._notify("CONTROL")
+        return self.focus_info()
+
+    def preview_focus(self, text: str, background: float | None) -> dict[str, Any]:
+        with self.lock:
+            return self.pipeline.preview_focus(text, background, self._last_eval)
+
+    def focus_info(self) -> dict[str, Any]:
+        with self.lock:
+            return {**self.pipeline.focus_info(self._last_eval), **self._focus_meta}
 
     # ------------------------------------------------------------------ operator FLATTEN (two-step)
     def request_flatten(self, operator: str, reason: str) -> dict[str, Any]:
@@ -287,7 +348,10 @@ class Monitor:
                 "last_success": h.last_success.isoformat() if h.last_success else None,
                 "last_attempt": h.last_attempt.isoformat() if h.last_attempt else None,
                 "last_error": h.last_error, "consecutive_failures": h.consecutive_failures,
-                "total_items": h.total_items, "total_malformed": h.total_malformed}
+                "total_items": h.total_items, "total_malformed": h.total_malformed,
+                "poll_seconds": r.poll.total_seconds(),
+                "data_through": (dt.isoformat() if (dt := getattr(r.adapter, "data_through", None)) else None),
+                "late_files": len(getattr(r.adapter, "pending", ())) + len(getattr(r.adapter, "late", ()))}
 
     def status(self) -> MonitorStatus:
         with self.lock:
@@ -298,10 +362,12 @@ class Monitor:
                     h = self._headline_cache.get(hid)
                     if h is not None:
                         top.append({"headline_id": hid, "headline": h.headline, "source": h.source})
+            focus = self.focus_info()
             return MonitorStatus(
                 run_id=self.run_id, mode=self.mode, data_origin=self.data_origin, state=self.sm.state,
                 snapshot=snap, decision=d,
                 reason=d.reason if d else "monitor starting: no assessment yet (fail-safe HALT)",
                 top_headlines=top, implementations=self.pipeline.implementations,
                 model_notes=self.model_notes, adapters=[self._adapter_dict(r) for r in self.adapters],
-                counters=dict(self.counters), flatten=self.sm.flatten_info, control=self._last_control)
+                counters=dict(self.counters), flatten=self.sm.flatten_info, control=self._last_control,
+                focus=focus)

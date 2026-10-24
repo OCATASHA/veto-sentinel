@@ -14,6 +14,7 @@ from __future__ import annotations
 import hmac
 import math
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -48,6 +49,11 @@ class FlattenConfirm(BaseModel):
     code: str = Field(min_length=1, max_length=16)
 
 
+class FocusRequest(BaseModel):
+    text: str = Field(default="", max_length=300)  # comma-separated phrases; "" = whole market
+    background_weight: float | None = Field(default=None, ge=0, le=1)
+
+
 class SpeedRequest(BaseModel):
     speed: float
 
@@ -67,12 +73,35 @@ def _is_https(request: Request) -> bool:
     return request.url.scheme == "https" or forwarded == "https"
 
 
+def cooldown_json(rt: Any) -> dict[str, Any] | None:
+    """Server-side calm countdown, so every viewer (and every refresh) sees the same running clock.
+
+    Live, the calm period runs on the real clock, so ``remaining_s`` is already exact. In a replay
+    it is as of the last replay step, and ``remaining_now_s`` adds how far the current step has got
+    at replay speed. ``rate`` is how many seconds of it pass per real second, for smooth ticking in
+    the browser between polls.
+    """
+    cd = rt.controller.monitor.cooldown_status()
+    if cd is None:
+        return None
+    c = rt.controller
+    if hasattr(c, "restart"):  # replay
+        rate = c.speed if c.playing and not c.finished else 0.0
+        progress = min(rate * (time.monotonic() - c.last_step_mono), c.tick.total_seconds()) if rate else 0.0
+        remaining_now = max(0.0, cd["remaining_s"] - progress)
+    else:
+        rate, remaining_now = 1.0, cd["remaining_s"]
+    return {**cd, "remaining_now_s": remaining_now, "rate": rate}
+
+
 def status_json(rt: Any) -> dict[str, Any]:
     mon = rt.controller.monitor
     st = mon.status()
     snap = st.snapshot
     s = rt.settings
     top = rt.store.headlines_by_id(mon.run_id, [h["headline_id"] for h in st.top_headlines])
+    for h in top:
+        h["relevance"] = mon.pipeline.relevance_of(h["headline_id"])
     d = st.decision
     return {
         "state": str(st.state), "reason": st.reason, "run_id": st.run_id, "mode": st.mode,
@@ -102,6 +131,8 @@ def status_json(rt: Any) -> dict[str, Any]:
             "heartbeat_timeout_ms": s.bus.heartbeat_timeout_ms,
             "fault_injection": s.bus.allow_fault_injection, "injected": rt.publisher.injected[-10:]},
         "client": rt.demo_client.status() if rt.demo_client is not None else None,
+        "cooldown": cooldown_json(rt),
+        "focus": st.focus,
         "caution_position_fraction": (rt.demo_client.tracker.cfg.caution_position_fraction
                                       if rt.demo_client is not None else 0.25),
     }
@@ -121,6 +152,10 @@ def create_app(rt: Any, auth: Auth | None = None) -> FastAPI:
         response.headers.setdefault("X-Frame-Options", "DENY")
         if request.url.path.startswith("/api/"):
             response.headers.setdefault("Cache-Control", "no-store")
+        else:
+            # Pages and static files: always revalidate (cheap 304 via ETag), so a normal refresh
+            # never mixes an old cached page with a newer script after an update.
+            response.headers.setdefault("Cache-Control", "no-cache")
         return response
 
     def session_user(request: Request) -> str | None:
@@ -254,6 +289,23 @@ def create_app(rt: Any, auth: Auth | None = None) -> FastAPI:
         return {"ticks": n, **c.info()}
 
     # ------------------------------------------------------------------ operator FLATTEN
+    # ------------------------------------------------------------------ focus ("Optimize for")
+    @api.post("/api/focus/preview")
+    def focus_preview(req: FocusRequest) -> dict:
+        try:
+            return rt.controller.monitor.preview_focus(req.text, req.background_weight)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+
+    @api.post("/api/focus")
+    def focus_set(req: FocusRequest, user: str = Depends(require_user),
+                  x_operator_token: str | None = Header(default=None)) -> dict:
+        _check_token(x_operator_token)
+        try:
+            return rt.controller.monitor.set_focus(req.text, req.background_weight, operator=user)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+
     @api.post("/api/operator/flatten/request")
     def flatten_request(req: FlattenRequest, x_operator_token: str | None = Header(default=None)) -> dict:
         _check_token(x_operator_token)

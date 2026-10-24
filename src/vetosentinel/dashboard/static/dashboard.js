@@ -129,6 +129,11 @@
     sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M4.6 4.6l1.4 1.4M18 18l1.4 1.4M2.5 12h2M19.5 12h2M4.6 19.4 6 18M18 6l1.4-1.4"/>',
     moon: '<path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/>',
     chevron: '<path d="M6 9l6 6 6-6"/>',
+    clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+    target: '<circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4.5"/><circle cx="12" cy="12" r="1" fill="currentColor"/>',
+    oil: '<path d="M12 3.5s6 6.6 6 10.6a6 6 0 0 1-12 0c0-4 6-10.6 6-10.6z"/>',
+    coin: '<circle cx="12" cy="12" r="8.5"/><path d="M14.5 9.2c-.6-.8-1.5-1.2-2.5-1.2-1.6 0-2.7.9-2.7 2s1 1.7 2.7 2 2.7.9 2.7 2-1.1 2-2.7 2c-1 0-1.9-.4-2.5-1.2M12 6.5V8M12 16v1.5"/>',
+    globe: '<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.4 2.4 3.5 5.2 3.5 8.5s-1.1 6.1-3.5 8.5c-2.4-2.4-3.5-5.2-3.5-8.5s1.1-6.1 3.5-8.5z"/>',
     heart: '<path d="M12 20s-7.5-4.6-7.5-10.2A4.2 4.2 0 0 1 12 7.3a4.2 4.2 0 0 1 7.5 2.5C19.5 15.4 12 20 12 20z"/>',
   };
   const icon = (name, cls = "") => `<svg class="ico ${cls}" viewBox="0 0 24 24" aria-hidden="true">${P[name] || ""}</svg>`;
@@ -158,7 +163,7 @@
     { key: "drift", z: "drift_z", name: "Topic change", q: "Is the news suddenly about something new?", icon: "shuffle", color: "--s2",
       rise: "the news switched to unusual topics",
       why: ["The news is drifting a little away from its usual topics.", "The news is focusing on clearly different topics than usual.", "The news has switched to completely different topics."],
-      explain: "A language AI (MiniLM) turns each headline into a ‘meaning fingerprint’. Veto Sentinel compares the last hour's topics with the past week's. A big gap means the story has changed — like a sudden wave of bank-run headlines.",
+      explain: "A language AI (MiniLM) turns each headline into a vector: a list of 384 numbers that captures what it is about, so headlines on similar topics get similar vectors. Veto Sentinel compares the last hour's topics with the past week's. A big gap means the story has changed — like a sudden wave of bank-run headlines.",
       fallback: "topic change uses simple word matching instead of the MiniLM AI" },
     { key: "volume", z: "volume_z", name: "News volume", q: "Is there an unusual amount of news?", icon: "bars", color: "--s3",
       rise: "the amount of news jumped",
@@ -227,6 +232,7 @@
     ["Sudden-change detector", "A statistical alarm (CUSUM) that fires when the risk score stays raised for a while, even if it never jumps past a threshold."],
     ["Simulated time", "In a replay, days of news are played back in minutes. Times shown are the replay's clock, not today's."],
     ["Demo data", "The default replay uses invented news about fictional banks and countries, so you can watch the system react safely."],
+    ["Optimize for", "Tells Veto Sentinel what you trade (for example “OPEC, crude oil”). Each headline gets a relevance score from its AI vector; matching news counts fully, other news a little. Every “normal” is recomputed with the same weights, so the risk score still compares like with like."],
   ];
 
   // ================================================================ app state
@@ -370,6 +376,7 @@
     }
     if (s.state === "FLATTEN" && s.flatten) {
       out.push({ text: `Set by ${s.flatten.operator}: ${s.flatten.reason}`, icon: "siren" });
+      out.push({ text: "To lift it: Controls tab → “Cancel emergency”. It then resumes at Stop and relaxes step by step.", icon: "info", cls: "info" });
       return out;
     }
     for (const sig of SIGNALS) {
@@ -384,14 +391,18 @@
       out.push({ text: "Because some information is missing, Veto Sentinel won't give the all-clear.", icon: "shield" });
     }
     const reason = (s.decision && s.decision.reason) || "";
-    const m = /cooling off, (\d+):(\d\d):\d\d remaining before (\w+)/.exec(reason);
+    const m = /cooling off, (\d+):(\d\d):\d\d remaining before (\w+)/.exec(reason)
+      || /waiting for newer news before (\w+)/.exec(reason);
     if (m) {
-      const mins = Number(m[1]) * 60 + Number(m[2]);
-      out.push({ text: `Things have calmed down. To avoid flip-flopping it waits another ${fmtDuration(mins)} before relaxing to “${level(m[3]).title}”.`, icon: "info", cls: "info" });
+      out.push({ text: `Things have calmed down. To avoid flip-flopping it waits before relaxing to “${level(m[3] || m[1]).title}” (see the countdown).`, icon: "info", cls: "info" });
     } else if (s.decision && s.decision.rule === "hold" && /exit condition/.test(reason)) {
       out.push({ text: "The risk score has eased, but not yet enough to relax the level.", icon: "info", cls: "info" });
     }
     if (!out.length) out.push({ text: "Negativity, topics and news volume are all in their normal range.", icon: "check" });
+    const f = s.focus;
+    if (f && f.text && f.effect && f.effect.focus_multiplier) {
+      out.push({ text: `Optimized for “${f.text}”: news about it moves the score ×${f.effect.focus_multiplier.toFixed(1)} as much as before, other news ×${f.effect.other_multiplier.toFixed(2)}.`, icon: "target", cls: "info" });
+    }
     return out;
   }
 
@@ -464,6 +475,7 @@
       S.heroState = s.state;
     }
     setText($("#heroDesc"), L.desc);
+    renderCalm(s);
     setText($("#heroRule"), s.decision ? `· rule ${s.decision.rule}` : "");
     const rs = reasons(s);
     const key = rs.map((r) => r.text).join("|");
@@ -473,6 +485,67 @@
       ul.replaceChildren(...rs.map((r, i) => h("li", { class: r.cls || "", style: { "--i": String(i) } },
         h("span", { html: icon(r.icon || "arrow") }), h("span", { text: r.text }))));
     }
+  }
+
+  function mmss(sec) {
+    const s = Math.max(0, Math.round(sec));
+    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+  }
+  // Countdown of the cooling-off period before the level relaxes one step. The server keeps the
+  // clock (real time live, simulated time in a replay); between status polls the browser ticks it.
+  let calmClock = null;
+  function calmLeft() {
+    return calmClock.remaining - calmClock.rate * ((performance.now() - calmClock.at) / 1000);
+  }
+  function tickCalm() {
+    if (!calmClock) return;
+    const left = calmLeft();
+    if (!Number.isFinite(left)) { setText($("#calmTime"), "–"); return; }
+    const words = left <= 0 && calmClock.waiting;
+    $("#calmTime").classList.toggle("words", words);
+    setText($("#calmTime"), words ? "waiting for news" : mmss(left));
+    $("#calmBar").style.width = `${clamp(1 - Math.max(0, left) / calmClock.total, 0, 1) * 100}%`;
+  }
+  window.setInterval(tickCalm, 250);
+  function renderCalm(s) {
+    const box = $("#calm"), cd = s.cooldown, th = s.thresholds;
+    const waitingFor = s.state === "HALT" || s.state === "CAUTION";
+    if (!cd && !(waitingFor && s.monitor_ready)) { box.hidden = true; return; }
+    box.hidden = false;
+    box.classList.toggle("waiting", !cd);
+    if (cd) {
+      const r = s.replay;
+      // The server owns the countdown (remaining_now_s); the browser only ticks between polls and
+      // never lets the display jump back up within the same calm period.
+      // (Falls back to the older fields if the server is an older version than this page.)
+      const rate = Number.isFinite(cd.rate) ? cd.rate : (r.mode === "replay" ? (r.playing && !r.finished ? r.speed : 0) : 1);
+      let remaining = Number.isFinite(cd.remaining_now_s) ? cd.remaining_now_s : cd.remaining_s;
+      if (calmClock && calmClock.started === cd.started && rate > 0) remaining = Math.min(remaining, calmLeft());
+      const waiting = !!cd.needs_newer_news && remaining <= 0;
+      calmClock = { remaining, total: cd.total_s, rate, started: cd.started, at: performance.now(), waiting };
+      setText($("#calmTitle"), `Relaxing to “${level(cd.next_state).title}” in`);
+      tickCalm();
+      if (waiting) {
+        setText($("#calmNote"), `The news has stayed calm for ${Math.round(cd.total_s / 60)} minutes. Before relaxing, Veto Sentinel `
+          + "waits for at least one newer batch of news to check, so a quiet moment is never just missing news. The news source is running late.");
+        return;
+      }
+      const pace = r.mode === "replay" && r.playing && !r.finished && r.speed
+        ? ` At the current replay speed that's about ${Math.max(1, Math.ceil(remaining / r.speed))} real second${Math.ceil(remaining / r.speed) === 1 ? "" : "s"}.`
+        : r.mode === "replay" ? " The replay is paused, so the countdown is too." : "";
+      setText($("#calmNote"), `The news must stay calm for ${Math.round(cd.total_s / 60)} minutes.${pace} If it flares up again, the countdown starts over.`);
+      return;
+    }
+    calmClock = null;
+    const exit = s.state === "HALT" ? th.halt_exit : th.caution_exit;
+    const cp = s.decision && s.decision.changepoint && s.decision.changepoint.alarm_active;
+    setText($("#calmTitle"), "Calm countdown not started yet");
+    setText($("#calmTime"), "");
+    let why = `It starts once the risk score falls below ${exit}`
+      + (s.risk_score == null ? "." : ` (now ${fmt(s.risk_score, 2)}).`);
+    if (s.state === "CAUTION" && s.degraded) why = "It starts once the missing information is back.";
+    else if (cp) why += " The sudden-change alarm also has to clear first.";
+    setText($("#calmNote"), `${why} Then the news has to stay calm for ${th.cooldown_minutes} minutes.`);
   }
 
   const GMAX = 6;
@@ -615,9 +688,22 @@
       this.hoverIdx = null;
       this.xmin = 0;
       this.xmax = 1;
+      this.view = null; // zoomed window {from, to, follow}, or null for the full range
       if (this.o.hover) {
-        canvas.addEventListener("pointermove", (e) => this.onMove(e));
-        canvas.addEventListener("pointerleave", () => this.onLeave());
+        canvas.addEventListener("pointermove", (e) => (this.drag ? this.onDrag(e) : this.onMove(e)));
+        canvas.addEventListener("pointerleave", () => { if (!this.drag) this.onLeave(); });
+      }
+      if (this.o.zoom) {
+        canvas.tabIndex = 0;
+        canvas.addEventListener("wheel", (e) => { e.preventDefault(); this.zoomAt(e.clientX, e.deltaY > 0 ? 1.25 : 0.8); }, { passive: false });
+        canvas.addEventListener("pointerdown", (e) => {
+          if (e.button !== 0 || !this.geom) return;
+          this.drag = { x: e.clientX, from: this.xmin, to: this.xmax, moved: false };
+          canvas.setPointerCapture(e.pointerId);
+        });
+        canvas.addEventListener("pointerup", () => { this.drag = null; });
+        canvas.addEventListener("dblclick", () => this.resetZoom());
+        canvas.addEventListener("keydown", (e) => this.onKey(e));
       }
       new ResizeObserver(() => this.draw()).observe(canvas.parentElement);
     }
@@ -625,9 +711,74 @@
       this.rows = rows;
       this.ts = rows.map((r) => Date.parse(r.as_of));
       this.series = series;
-      this.xmin = xmin != null ? xmin : this.ts[0];
-      this.xmax = xmax != null ? xmax : this.ts[this.ts.length - 1];
-      if (!(this.xmax > this.xmin)) this.xmax = this.xmin + 1;
+      this.bx0 = xmin != null ? xmin : this.ts[0];
+      this.bx1 = xmax != null ? xmax : this.ts[this.ts.length - 1];
+      this.applyView();
+    }
+    applyView() {
+      let a = this.bx0, b = this.bx1;
+      if (this.view && b > a) {
+        const full = b - a;
+        const span = Math.min(this.view.to - this.view.from, full);
+        let from = this.view.follow ? b - span : this.view.from;
+        from = clamp(from, a, b - span);
+        if (span >= full - 1000) this.view = null; // zoomed all the way out
+        else { this.view = { from, to: from + span, follow: from + span >= b - 1000 }; a = from; b = from + span; }
+      }
+      this.xmin = a;
+      this.xmax = b > a ? b : a + 1;
+      if (this.o.onView) this.o.onView(!!this.view);
+    }
+    timeAt(clientX) {
+      const { x0, x1 } = this.geom;
+      const x = clientX - this.canvas.getBoundingClientRect().left;
+      return this.xmin + ((clamp(x, x0, x1) - x0) / (x1 - x0)) * (this.xmax - this.xmin);
+    }
+    zoomAt(clientX, factor) {
+      if (!this.rows.length || !this.geom) return;
+      const t = this.timeAt(clientX), span = this.xmax - this.xmin;
+      const next = clamp(span * factor, 3600e3, this.bx1 - this.bx0); // never closer than one hour
+      const from = t - ((t - this.xmin) / span) * next;
+      this.view = { from, to: from + next, follow: false };
+      this.applyView();
+      this.draw();
+      if (this.hoverIdx != null) this.tipAt(this.hoverIdx);
+    }
+    resetZoom() { this.view = null; this.applyView(); this.draw(); }
+    onDrag(e) {
+      const { x0, x1 } = this.geom, d = this.drag;
+      if (Math.abs(e.clientX - d.x) > 3) d.moved = true;
+      if (!d.moved) return;
+      const shift = -((e.clientX - d.x) / (x1 - x0)) * (d.to - d.from);
+      this.view = { from: d.from + shift, to: d.to + shift, follow: false };
+      this.applyView();
+      this.hoverIdx = null;
+      $("#chartTip").hidden = true;
+      this.draw();
+    }
+    onKey(e) {
+      if (!this.rows.length) return;
+      if (e.key === "Escape") { this.onLeave(); return; }
+      const step = { ArrowLeft: -1, ArrowRight: 1 }[e.key];
+      if (!(e.key === "Home" || e.key === "End" || step)) return;
+      e.preventDefault();
+      let i = this.hoverIdx;
+      if (e.key === "Home") i = 0;
+      else if (e.key === "End" || i == null) i = this.rows.length - 1;
+      else i = clamp(i + step * (e.shiftKey ? 12 : 1), 0, this.rows.length - 1); // Shift = one hour
+      const t = this.ts[i], span = this.xmax - this.xmin;
+      if (t < this.xmin || t > this.xmax) { // keep the selected reading on screen
+        this.view = { from: t - span / 2, to: t + span / 2, follow: false };
+        this.applyView();
+      }
+      this.hoverIdx = i;
+      this.draw();
+      this.tipAt(i);
+    }
+    tipAt(i) {
+      if (!this.geom) return;
+      const rect = this.canvas.getBoundingClientRect();
+      showTip({ clientX: rect.left + this.geom.X(this.ts[i]), clientY: rect.top + 60 }, this.rows[i], this.series);
     }
     animateIn() {
       if (reduceMotion) { this.progress = 1; this.draw(); return; }
@@ -815,10 +966,7 @@
     }
     onMove(e) {
       if (!this.rows.length || !this.geom) return;
-      const rect = this.canvas.getBoundingClientRect();
-      const x = e.clientX - rect.left;
-      const { x0, x1 } = this.geom;
-      const t = this.xmin + ((clamp(x, x0, x1) - x0) / (x1 - x0)) * (this.xmax - this.xmin);
+      const t = this.timeAt(e.clientX);
       let lo = 0, hi = this.ts.length - 1;
       while (lo < hi) { const mid = (lo + hi) >> 1; if (this.ts[mid] < t) lo = mid + 1; else hi = mid; }
       if (lo > 0 && Math.abs(this.ts[lo - 1] - t) < Math.abs(this.ts[lo] - t)) lo -= 1;
@@ -865,7 +1013,7 @@
   }
 
   const miniChart = new TimeChart($("#miniChart"), { area: true });
-  const bigChart = new TimeChart($("#bigChart"), {});
+  const bigChart = new TimeChart($("#bigChart"), { zoom: true, onView: (z) => { const b = $("#zoomReset"); if (b) b.hidden = !z; } });
   const sparks = {};
 
   function lastHours(hours) {
@@ -931,17 +1079,30 @@
       h("span", { class: "line", style: { background: `var(${sr.color})` } }), SERIES_NAMES[sr.key])),
     ...legendBands(), h("span", { class: "lk" }, h("span", { class: "dash" }), "Be careful / Stop thresholds"));
   }
+  // Every reading in the selected range, newest first. Rows are plain numbers and our own labels,
+  // so they are built as one HTML string; new readings are prepended instead of rebuilding.
+  function tableRow(r) {
+    return `<tr><td>${fmtFull(r.as_of)}</td><td>${level(r.state).title}</td><td class="num">${fmt(r.risk_score)}</td>`
+      + `<td class="num">${fmt(r.panic_z)}</td><td class="num">${fmt(r.drift_z)}</td><td class="num">${fmt(r.volume_z)}</td></tr>`;
+  }
   function renderTable(rows) {
     const box = $("#tableView");
-    const hourly = rows.filter((r) => r.as_of.slice(14, 16) === "00").reverse().slice(0, 400);
-    const key = `${hourly.length}|${hourly[0] ? hourly[0].as_of : ""}`;
-    if (box.dataset.key === key) return;
-    box.dataset.key = key;
-    const head = h("tr", null, ...["Time (UTC)", "Level", "Risk score", "Negativity", "Topic change", "News volume"].map((t) => h("th", { text: t })));
-    const body = hourly.map((r) => h("tr", null, h("td", { text: fmtFull(r.as_of) }), h("td", { text: level(r.state).title }),
-      h("td", { class: "num", text: fmt(r.risk_score) }), h("td", { class: "num", text: fmt(r.panic_z) }),
-      h("td", { class: "num", text: fmt(r.drift_z) }), h("td", { class: "num", text: fmt(r.volume_z) })));
-    box.replaceChildren(h("table", null, h("thead", null, head), h("tbody", null, ...body)));
+    const rk = `${S.runId}|${S.range}`;
+    const oldest = rows.length ? rows[0].as_of : "", newest = rows.length ? rows[rows.length - 1].as_of : "";
+    const tbody = box.querySelector("tbody");
+    if (tbody && box.dataset.rk === rk && box.dataset.oldest === oldest) {
+      if (box.dataset.newest === newest) return;
+      const fresh = [];
+      for (let i = rows.length - 1; i >= 0 && rows[i].as_of > box.dataset.newest; i--) fresh.push(tableRow(rows[i]));
+      tbody.insertAdjacentHTML("afterbegin", fresh.join(""));
+    } else {
+      const head = ["Time (UTC)", "Level", "Risk score", "Negativity", "Topic change", "News volume"].map((t) => `<th>${t}</th>`).join("");
+      const body = [];
+      for (let i = rows.length - 1; i >= 0; i--) body.push(tableRow(rows[i]));
+      box.innerHTML = `<p class="caption top table-count"></p><table><thead><tr>${head}</tr></thead><tbody>${body.join("")}</tbody></table>`;
+    }
+    Object.assign(box.dataset, { rk, oldest, newest });
+    setText($(".table-count", box), `Every 5-minute reading in this range, newest first (${rows.length.toLocaleString("en-GB")} rows).`);
   }
 
   // ================================================================ signals tab
@@ -1031,8 +1192,25 @@
       S.tilesKey = key;
       $("#newsTiles").replaceChildren(...tiles.map(([a, b, n]) => tile(a, b, n)));
     }
+    const fresh = $("#newsFresh");
+    if (fresh) {
+      const g = s.adapters.find((a) => a.data_through);
+      let txt = "";
+      if (s.mode === "live") {
+        txt = `Live: news assessed up to ${s.as_of ? fmtClock(s.as_of) : "–"} UTC. `;
+        if (g) txt += `GDELT is checked every ${Math.round(g.poll_seconds / 60)} min and publishes a new batch every 15 min, usually 15–60 min after the fact`
+          + (g.late_files ? ` (${g.late_files} late batch${g.late_files > 1 ? "es" : ""} still awaited).` : ".");
+        txt += " Central-bank feeds only change when they publish (a few times a day).";
+      }
+      setText(fresh, txt);
+      fresh.hidden = !txt;
+    }
     const heads = s.top_headlines || [];
-    const hk = heads.map((x) => x.headline_id).join("|");
+    const focus = s.focus && s.focus.text ? s.focus.text : "";
+    setText($("#newsCaption"), focus
+      ? `The headlines pushing negativity up most in the last hour, now weighted by how closely they match “${focus}”. A longer, redder bar means more negative; the tag shows how on-topic each one is.`
+      : "The most negative headlines from the last hour, as scored by the AI. A longer, redder bar means the headline sounds more negative.");
+    const hk = focus + "|" + heads.map((x) => `${x.headline_id}:${x.relevance == null ? "" : x.relevance.toFixed(2)}`).join("|");
     if (hk === S.headKey) return;
     S.headKey = hk;
     const ul = $("#headlines");
@@ -1044,14 +1222,160 @@
       const p = x.p_negative == null ? null : x.p_negative;
       const tone = p == null ? "na" : p >= 0.65 ? "critical" : p >= 0.35 ? "warning" : "good";
       const word = p == null ? "not scored" : p >= 0.65 ? "Negative" : p >= 0.35 ? "Mixed" : "Calm";
+      const rel = x.relevance;
       return h("li", { style: { "--i": String(i) } },
-        h("div", { class: "hl-text", text: x.headline }),
+        h("div", { class: "hl-text" }, x.headline,
+          rel == null ? null : h("span", { class: "rel-tag", dataset: { level: rel >= 0.9 ? "high" : rel >= 0.5 ? "mid" : "low" },
+            text: rel >= 0.5 ? `${Math.round(rel * 100)}% on topic` : "off topic" })),
         h("div", { class: "neg" },
           h("div", { class: "neg-label" }, h("span", { text: word }), h("b", { text: p == null ? "–" : `${Math.round(p * 100)}%` })),
           h("div", { class: "neg-track" }, h("span", { style: { width: `${p == null ? 0 : Math.max(3, p * 100)}%`, background: `var(--${tone === "na" ? "axis" : tone})` } }))),
         h("div", { class: "hl-meta" }, h("span", { text: x.source }), h("span", { text: fmtFull(x.event_time) }),
           h("span", { class: "x mono", text: `${x.headline_id} · ${x.sentiment_impl || ""}` })));
     }));
+  }
+
+  // ================================================================ optimize for (focus)
+  const FOCUS_PRESETS = [
+    { icon: "globe", label: "Whole market", text: "" },
+    { icon: "oil", label: "Oil & energy", text: "OPEC, crude oil prices, oil supply, refineries, oil tankers, natural gas" },
+    { icon: "bank", label: "Banks & credit", text: "banks, bank run, deposits, credit markets, loan defaults, bank capital" },
+    { icon: "scale", label: "Rates & central banks", text: "central bank, interest rates, inflation, Federal Reserve, bond yields" },
+    { icon: "cpu", label: "Tech & chips", text: "semiconductors, chip makers, AI stocks, big tech earnings" },
+    { icon: "coin", label: "Crypto", text: "bitcoin, crypto exchange, stablecoin, crypto regulation" },
+  ];
+  let focusTimer = 0, focusSeq = 0;
+  const pct = (x, d = 0) => `${(x * 100).toFixed(d)}%`;
+  function focusBody() {
+    return { text: $("#focusText").value.trim(), background_weight: Number($("#focusBg").value) / 100 };
+  }
+  function renderFocusBtn(s) {
+    const f = s.focus || {};
+    const b = $("#focusBtn");
+    b.classList.toggle("on", !!f.text);
+    setText($("#focusName"), f.text ? f.phrases.slice(0, 2).join(", ") + (f.phrases.length > 2 ? "…" : "") : "Whole market");
+    b.title = f.text ? `Optimized for: ${f.text} (click to change)` : "Choose which news matters most for what you trade";
+  }
+  function markPreset() {
+    const t = $("#focusText").value.trim().toLowerCase();
+    for (const b of $$("#focusPresets button")) b.classList.toggle("on", b.dataset.text.toLowerCase() === t);
+  }
+  function openFocus() {
+    const f = (S.status && S.status.focus) || {};
+    $("#focusText").value = f.text || "";
+    $("#focusBg").value = String(Math.round((f.background_weight ?? 0.05) * 100));
+    setText($("#focusBgVal"), `${$("#focusBg").value}%`);
+    markPreset();
+    $("#focusDlg").showModal();
+    previewFocus();
+  }
+  function schedulePreview() {
+    window.clearTimeout(focusTimer);
+    focusTimer = window.setTimeout(previewFocus, 400);
+  }
+  async function previewFocus() {
+    const body = focusBody();
+    const seq = ++focusSeq;
+    markPreset();
+    if (!body.text) { renderFocusPreview(null); return; }
+    $("#focusPreview").classList.add("loading");
+    try {
+      const p = await post("/api/focus/preview", body);
+      if (seq === focusSeq) renderFocusPreview(p);
+    } catch (e) {
+      if (seq === focusSeq) renderFocusPreview({ error: e.message });
+    } finally {
+      if (seq === focusSeq) $("#focusPreview").classList.remove("loading");
+    }
+  }
+  function focusStat(value, label, note) {
+    return h("div", { class: "fd-stat" }, h("b", { text: value }), h("span", { text: label }), note ? h("small", { text: note }) : null);
+  }
+  function renderFocusPreview(p) {
+    const stats = $("#focusStats"), dist = $("#focusDist"), top = $("#focusTop"), note = $("#focusNote");
+    top.replaceChildren();
+    dist.hidden = true;
+    $("#focusTopH").hidden = true;
+    setText($("#focusMethod"), "");
+    setText($("#focusKey"), "");
+    setText($("#focusCalib"), "");
+    if (!p) {
+      stats.replaceChildren(focusStat("All news", "counts the same", "the standard, market-wide setting"));
+      setText(note, "Pick an example or type the things you trade. The preview shows which recent headlines would count.");
+      return;
+    }
+    if (p.error) {
+      stats.replaceChildren();
+      setText(note, p.error);
+      return;
+    }
+    setText($("#focusMethod"), p.is_fallback ? "Matched by words (simplified: the AI model isn't loaded)" : "Matched by meaning (MiniLM AI vectors)");
+    if (!p.effect) {
+      stats.replaceChildren();
+      setText(note, `Not enough news yet to learn what a typical headline looks like (${p.note || "calibrating"}). It switches on automatically once there is.`);
+      return;
+    }
+    const e = p.effect;
+    stats.replaceChildren(
+      focusStat(pct(e.share, e.share < 0.1 ? 1 : 0), "of headlines match", `about ${e.per_hour.toFixed(e.per_hour < 10 ? 1 : 0)} an hour`),
+      focusStat(`×${e.focus_multiplier.toFixed(1)}`, "pull of matching news", "on the score, vs. whole market"),
+      focusStat(`×${e.other_multiplier.toFixed(2)}`, "pull of other news", "so big market-wide shocks still show"));
+    const total = p.histogram.reduce((a, b) => a + b, 0) || 1;
+    const names = ["Off topic", "Slightly", "Mostly", "Clearly on topic"];
+    dist.replaceChildren(...p.histogram.map((n, i) => h("span", {
+      class: `d${i}`, style: { "flex-grow": String(Math.max(n / total, 0.001)) }, title: `${names[i]}: ${n.toLocaleString("en-GB")} headlines`,
+    }, n / total > 0.08 ? h("i", { text: names[i] }) : null)));
+    dist.hidden = false;
+    setText($("#focusKey"), p.histogram.map((n, i) => `${names[i]} ${pct(n / total, n / total < 0.1 ? 1 : 0)}`).join("  ·  "));
+    $("#focusTopH").hidden = !p.top.length;
+    top.replaceChildren(...p.top.map((t, i) => h("li", { style: { "--i": String(i) } },
+      h("span", { class: "fd-rel" }, h("span", { style: { width: `${Math.max(4, t.relevance * 100)}%` } })),
+      h("b", { text: pct(t.relevance) }),
+      h("span", { class: "fd-hl", text: t.headline }),
+      t.z == null ? null : h("span", { class: "x mono", text: `z ${t.z.toFixed(1)}` }))));
+    const c = p.calibration;
+    setText(note, (e.per_hour < 2
+      ? "Few headlines match, so the focused score will be jumpier (it is still judged against its own normal). Adding related words catches more. "
+      : "") + "Applying recalculates the last 7 days of “normal” with these weights, so the score compares like with like.");
+    if (c) {
+      setText($("#focusCalib"), `relevance r = logistic((z − ${c.z_mid}) / ${c.z_soft}), z = (cos − ${c.center.toFixed(3)}) / ${c.scale.toFixed(3)}`
+        + ` (median / robust sd of ${c.headlines.toLocaleString("en-GB")} past headlines); weight w = ${p.background_weight} + ${(1 - p.background_weight).toFixed(2)}·r;`
+        + ` effective share of weight ${pct(e.effective_share, 1)}`);
+    }
+  }
+  async function applyFocus(text) {
+    const btn = text ? $("#focusApply") : $("#focusReset");
+    btn.classList.add("busy");
+    try {
+      const f = await post("/api/focus", { ...focusBody(), text });
+      $("#focusDlg").close();
+      toast(f.text ? "Now optimized for your focus" : "Back to the whole market",
+        f.text ? `“${f.text}”. The last 7 days of “normal” were recalculated in ${f.recompute_seconds}s.` : "Every headline counts the same again.", "good", "target");
+      S.history = [];
+      await Promise.all([pollStatus(), pollHistory()]);
+    } catch (e) {
+      toast("Couldn't change the focus", e.message, "critical");
+    } finally {
+      btn.classList.remove("busy");
+    }
+  }
+  function wireFocus() {
+    $("#focusPresets").replaceChildren(...FOCUS_PRESETS.map((p) => h("button", {
+      type: "button", class: "fd-chip", dataset: { text: p.text }, html: `${icon(p.icon)}<span>${p.label}</span>` })));
+    $("#focusBtn").addEventListener("click", openFocus);
+    $("#focusClose").addEventListener("click", () => $("#focusDlg").close());
+    $("#focusDlg").addEventListener("click", (e) => { if (e.target === e.currentTarget) e.currentTarget.close(); });
+    $("#focusPresets").addEventListener("click", (e) => {
+      const b = e.target.closest("button");
+      if (!b) return;
+      $("#focusText").value = b.dataset.text;
+      previewFocus();
+    });
+    $("#focusText").addEventListener("input", schedulePreview);
+    $("#focusText").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); applyFocus(focusBody().text); } });
+    $("#focusBg").addEventListener("input", () => { setText($("#focusBgVal"), `${$("#focusBg").value}%`); schedulePreview(); });
+    $("#focusApply").addEventListener("click", () => applyFocus(focusBody().text));
+    $("#focusReset").addEventListener("click", () => applyFocus(""));
   }
 
   // ================================================================ bots tab
@@ -1233,15 +1557,12 @@
   const SPEEDS = [600, 1800, 3600, 10800, 43200];
   function renderControls(s) {
     const r = s.replay;
+    renderFlatten(s);
     const live = r.mode !== "replay";
     $("#playerCard").classList.toggle("is-live", live);
-    if (live) {
-      setText($("#replaySub"), "Live mode — reading real feeds, nothing to replay");
-      setText($("#simTime"), fmtFull(s.as_of));
-      setText($("#replayStatus"), "Live");
-      $$("#playerCard button").forEach((b) => (b.disabled = true));
-      return;
-    }
+    $("#playerCard").hidden = live; // live news can't be paused or fast-forwarded
+    $("#eventsCard").hidden = live;
+    if (live) return;
     setText($("#replaySub"), `${r.synthetic ? "Invented demo news" : r.data_origin.replace(/_/g, " ")} · ${r.fixture_title || r.fixture}`);
     setText($("#simTime"), fmtFull(r.sim_time));
     setText($("#replayStatus"), r.finished ? "Finished" : r.playing ? "Playing" : "Paused");
@@ -1289,7 +1610,8 @@
       const when = $(".when", ev);
       setText(when, during ? `Happening now (since ${fmtClock(ev.dataset.onset)})` : fmtFull(ev.dataset.onset));
     }
-    // FLATTEN
+  }
+  function renderFlatten(s) {
     const active = s.state === "FLATTEN" && s.flatten;
     $("#flatActive").hidden = !active;
     $("#fsteps").style.display = active ? "none" : "";
@@ -1433,6 +1755,7 @@
     renderMiniSignals(s);
     renderSignals(s);
     renderNews(s);
+    renderFocusBtn(s);
     renderBots(s);
     renderControls(s);
     renderHow(s);
@@ -1514,6 +1837,8 @@
       if (n) { e.preventDefault(); selectTab(n, { focus: true }); }
     });
     window.addEventListener("resize", placeIndicator);
+    $("#zoomReset")?.addEventListener("click", () => bigChart.resetZoom());
+    wireFocus();
 
     document.addEventListener("click", (e) => {
       const help = e.target.closest(".help");
@@ -1572,7 +1897,7 @@
       S.range = Number(b.dataset.range);
       for (const x of $$("#rangeSeg button")) x.classList.toggle("on", x === b);
       chartsAnimated.timeline = false;
-      $("#tableView").dataset.key = "";
+      bigChart.view = null; // a new range starts zoomed out
       renderCharts(false);
     });
     $("#seriesToggles").addEventListener("change", (e) => {
@@ -1586,7 +1911,6 @@
       $("#tableToggle").setAttribute("aria-pressed", String(S.table));
       setText($("#tableToggle"), S.table ? "Hide table" : "Show as table");
       $("#tableView").hidden = !S.table;
-      $("#tableView").dataset.key = "";
       renderCharts(false);
     });
 

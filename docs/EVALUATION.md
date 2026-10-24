@@ -98,6 +98,34 @@ event must not be used to tune them.
 The fail-safe behaviour did work as designed. The missing data file and the warm-up weekend
 both produced HALT, never NORMAL.
 
+### 2b. The same replay with "Optimize for: Banks & credit"
+
+This tests the dilution explanation, not a tuned model. The focus is the dashboard's
+*Banks & credit* preset ("banks, bank run, deposits, credit markets, loan defaults, bank
+capital"), written for the UI before this replay was run. The relevance settings (z_mid 3,
+z_soft 0.5, other news 0.05) were set from one day of 2026 live headlines. Nothing was adjusted
+after seeing the result. Report: `reports/historical_gdelt_svb_2023_focus_banks/`. Rerunning
+whole-market with the current code reproduced section 2 exactly.
+
+| metric | whole market | Banks & credit |
+|---|---|---|
+| minutes to first CAUTION *evidence* | 570 (9 Mar 06:30Z) | 1,905 (10 Mar 04:45Z; panic z 3.0 + CUSUM) |
+| minutes to first HALT *evidence* | 5,900 (Sun 12 Mar 23:20Z) | **2,185 (Fri 10 Mar 09:25Z**; panic z 2.6, drift z 2.7, CUSUM) |
+| peak R in window | 2.35 | **3.78** |
+| max R, 9 Mar US hours (share collapse) | 0.27 | 0.48 |
+| max R, 10 Mar 00:00–16:00Z | 1.43 | 2.11 |
+| max R / HALT min (ready), 10 Mar 16:00Z – 12 Mar 22:00Z | 1.85 / 30 | 3.78 / 330 |
+| elevated episodes outside the window | 6 | 4 |
+| HALT min outside the window, monitor ready (2–8 Mar) | 175 | 30 |
+
+**Reading.** Focusing on banks made the signal markedly stronger and earlier where it
+mattered most. The first score-driven HALT moved from Sunday night to Friday morning (UTC),
+hours before SVB was closed that day, and peak R rose by 60%. It also produced fewer alarms in
+the week before. It did **not** fix everything: there is still no signal during the 9 Mar share
+collapse itself, and the brief early CAUTION of 9 Mar 06:30Z (whole market) disappears. This is
+one event with an implementer-chosen label. It supports dilution as the main cause, but it is
+not a validation, and other events are needed before claiming a benefit.
+
 ## 3. What has *not* been evaluated
 
 - Any second historical event, a calibration of false-alarm rates, or comparison with market

@@ -125,7 +125,12 @@ class MiniLMEmbedder:
         from sentence_transformers import SentenceTransformer
 
         self.model = SentenceTransformer(model_name)
-        self.dim = int(self.model.get_sentence_embedding_dimension())
+        # Newer sentence-transformers renamed this method; either may return None for odd models.
+        get_dim = getattr(self.model, "get_embedding_dimension", None) or getattr(self.model, "get_sentence_embedding_dimension")  # noqa: B009 (old name, older versions)
+        dim = get_dim()
+        if dim is None:
+            raise RuntimeError(f"{model_name} does not report an embedding size")
+        self.dim = int(dim)
         self.implementation = f"sentence-transformers:{model_name}"
 
     def embed(self, texts: list[str]) -> np.ndarray:

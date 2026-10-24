@@ -191,3 +191,55 @@ def test_weights_validated():
         CompositeConfig(weights={"panic": 1.0, "drift": 0.0})
     with pytest.raises(ValidationError):
         CompositeConfig(weights={"panic": 1.2, "drift": -0.2, "volume": 0.0})
+
+
+def test_cooldown_status_counts_down_and_resets():
+    drv = Driver(StateMachine(cfg()))
+    ready_normal(drv)
+    drv.step(2.5)  # -> CAUTION
+    assert drv.sm.cooldown_status(drv.t) is None  # still stressed: nothing counting yet
+    drv.step(0.5)
+    start = drv.t - STEP
+    drv.step(0.5)
+    st = drv.sm.cooldown_status(drv.t - STEP)
+    assert st is not None and st["next_state"] == "NORMAL" and st["total_s"] == 1800
+    assert st["elapsed_s"] == 300 and st["remaining_s"] == 1500 and st["started"] == start.isoformat()
+    drv.step(1.5)  # flare-up above caution_exit: countdown resets
+    assert drv.sm.cooldown_status(drv.t) is None
+
+
+def test_live_cooldown_runs_on_the_clock_and_needs_newer_news():
+    """Live news arrives late and in batches: the wait is timed on the monitor's clock, not news time."""
+    sm = StateMachine(cfg())
+    news, now = T0, T0 + timedelta(minutes=40)
+
+    def step(score, news_t, now_t):
+        return sm.step(EngineInput(as_of=news_t, risk_score=score, monitor_ready=True, now=now_t))
+
+    def left(machine, at):
+        st = machine.cooldown_status(at)
+        assert st is not None
+        return st["remaining_s"]
+
+    assert step(2.2, news, now).rule == "cooldown_pending"  # startup HALT, eased: cooling off starts
+    assert left(sm, now + timedelta(minutes=10)) == 1200
+    d = step(2.2, news + timedelta(minutes=45), now + timedelta(minutes=5))  # a news backlog lands at once
+    assert d.new_state is RiskState.HALT and left(sm, now + timedelta(minutes=5)) == 1500
+    sm2 = StateMachine(cfg())
+    step2 = lambda n, w: sm2.step(EngineInput(as_of=n, risk_score=2.2, monitor_ready=True, now=w))  # noqa: E731
+    step2(news, now)
+    d = step2(news, now + timedelta(minutes=31))  # 31 real minutes, but no newer news at all
+    assert d.new_state is RiskState.HALT and "waiting for newer news" in d.reason
+    st = sm2.cooldown_status(now + timedelta(minutes=31))
+    assert st is not None and st["remaining_s"] == 0 and st["needs_newer_news"]
+    d = step2(news + timedelta(minutes=15), now + timedelta(minutes=32))  # a newer batch, still calm
+    assert d.new_state is RiskState.CAUTION and d.rule == "deescalate_after_cooldown"
+    # Live news time can follow the clock without any new headline (GDELT stamps files ahead of
+    # time): only newly ingested headlines count as new news.
+    sm3 = StateMachine(cfg())
+    step3 = lambda n, w, seen: sm3.step(EngineInput(as_of=n, risk_score=2.2, monitor_ready=True, now=w,  # noqa: E731
+                                                    news_seen=seen))
+    step3(news, now, 100)
+    d = step3(news + timedelta(minutes=31), now + timedelta(minutes=31), 100)
+    assert d.new_state is RiskState.HALT and "waiting for newer news" in d.reason
+    assert step3(news + timedelta(minutes=32), now + timedelta(minutes=32), 103).new_state is RiskState.CAUTION
