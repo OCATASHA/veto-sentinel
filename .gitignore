@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+# runtime databases and logs stay local; the curated real-history dataset is shared
+data/*
+!data/historical/
+data/historical/*
+!data/historical/gdelt_gkg_svb_2023.jsonl
+clients/cpp/build/
+*.duckdb
+*.duckdb.wal
+*.partial
+.DS_Store

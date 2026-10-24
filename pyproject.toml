@@ -1,0 +1,64 @@
+[project]
+name = "vetosentinel"
+version = "0.1.0"
+description = "Explainable, fail-safe news-based regime-risk monitor for automated trading systems (prototype)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    "pydantic>=2.6",
+    "numpy>=1.26",
+    "pyzmq>=25",
+    "duckdb>=1.0",
+    "httpx>=0.27",
+    "defusedxml>=0.7",
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+]
+
+[project.optional-dependencies]
+# Heavy model backends. Veto Sentinel runs without them using clearly labelled fallbacks.
+ml = [
+    "transformers>=4.40",
+    "torch>=2.2",
+    "sentence-transformers>=2.7",
+]
+
+[dependency-groups]
+# Installed by `uv sync` by default; not part of the published package.
+dev = [
+    "pytest>=8",
+    "ruff>=0.4",
+]
+
+[project.scripts]
+vetosentinel = "vetosentinel.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/vetosentinel"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+markers = [
+    "network: test needs internet access (skipped by default; run with -m network)",
+    "ml: test needs transformers/sentence-transformers models (skipped if unavailable)",
+    "zmq: test opens local ZeroMQ sockets",
+]
+
+[tool.ruff]
+line-length = 110
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501"]
+
+[tool.pyright]
+# Point Pyright/basedpyright (editor LSP) at the uv-managed project venv.
+venvPath = "."
+venv = ".venv"

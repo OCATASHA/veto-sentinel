@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Veto Sentinel</title>
+<meta name="description" content="Veto Sentinel reads financial news and keeps trading bots safe when the story changes.">
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/welcome.css">
+<script src="/static/welcome.js" defer></script>
+</head>
+<body>
+<canvas id="scene" aria-hidden="true"></canvas>
+<div class="aurora" aria-hidden="true"><span></span><span></span><span></span></div>
+<div class="vignette" aria-hidden="true"></div>
+
+<main>
+  <!-- ============================== welcome ============================== -->
+  <section id="welcome" class="screen play" aria-labelledby="title">
+    <div class="emblem" aria-hidden="true">
+      <span class="radar"></span>
+      <span class="beat"></span>
+      <svg class="shield" viewBox="0 0 120 140">
+        <defs>
+          <linearGradient id="shieldStroke" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="#99f6e4"/>
+            <stop offset=".55" stop-color="#2dd4bf"/>
+            <stop offset="1" stop-color="#3987e5"/>
+          </linearGradient>
+          <linearGradient id="shieldFill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="#123a5a" stop-opacity=".95"/>
+            <stop offset="1" stop-color="#071226" stop-opacity=".95"/>
+          </linearGradient>
+          <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+            <feGaussianBlur stdDeviation="2.4" result="b"/>
+            <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+          </filter>
+        </defs>
+        <path class="shield-fill" d="M60 6 108 24v42c0 33-21.5 57.5-48 68C33.5 123.5 12 99 12 66V24z"/>
+        <path class="shield-line" pathLength="100" d="M60 6 108 24v42c0 33-21.5 57.5-48 68C33.5 123.5 12 99 12 66V24z"/>
+        <path class="pulse-base" pathLength="100" d="M24 76h17l5-14 8 30 7-44 7 36 5-8h23"/>
+        <path class="pulse-glow" pathLength="100" filter="url(#glow)" d="M24 76h17l5-14 8 30 7-44 7 36 5-8h23"/>
+      </svg>
+    </div>
+
+    <h1 id="title" class="title" aria-label="Veto Sentinel" data-text="Veto Sentinel">Veto Sentinel</h1>
+    <p class="tagline">Reads the world&rsquo;s financial news.<br>Keeps trading bots safe when the story suddenly changes.</p>
+
+    <ul class="pillars" aria-label="What it watches">
+      <li style="--i:0">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M8.5 16.5a5 5 0 0 1 7 0M9 10h.01M15 10h.01"/></svg>
+        Negativity
+      </li>
+      <li style="--i:1">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h4l8 10h4M4 17h4l2.5-3M14 10l2-3h4"/><path d="M18 4.5 20.5 7 18 9.5M18 14.5l2.5 2.5-2.5 2.5"/></svg>
+        Topic shifts
+      </li>
+      <li style="--i:2">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path class="bar b1" d="M5 19v-5"/><path class="bar b2" d="M10 19V8"/><path class="bar b3" d="M15 19v-8"/><path class="bar b4" d="M20 19V5"/></svg>
+        News volume
+      </li>
+    </ul>
+
+    <button id="enter" class="enter" type="button">
+      <span class="enter-fill" aria-hidden="true"></span>
+      <span class="enter-label">Enter the console</span>
+      <svg class="enter-arrow" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+    </button>
+    <p class="hint">Press <kbd>Enter</kbd> to continue</p>
+  </section>
+
+  <!-- ============================== login ============================== -->
+  <section id="login" class="screen" aria-labelledby="login-title" hidden>
+    <form id="login-form" class="card" novalidate autocomplete="on">
+      <span class="card-border" aria-hidden="true"></span>
+      <div class="card-emblem" aria-hidden="true">
+        <svg viewBox="0 0 64 64">
+          <path class="ce-shield" d="M32 5 55 14v18c0 13.6-10.2 23.8-23 27C19.2 55.8 9 45.6 9 32V14z"/>
+          <g class="ce-lock">
+            <rect x="22" y="29" width="20" height="15" rx="3.5"/>
+            <path class="ce-shackle" d="M26 29v-4.5a6 6 0 0 1 12 0V29"/>
+          </g>
+          <path class="ce-check" pathLength="100" d="M21 33.5l7.5 7.5L44 25.5"/>
+        </svg>
+      </div>
+      <h2 id="login-title">Sign in</h2>
+      <p class="sub">Veto Sentinel operator console</p>
+
+      <label class="field">
+        <input id="username" name="username" autocomplete="username" autocapitalize="off" spellcheck="false" required placeholder=" ">
+        <span>Username</span>
+      </label>
+      <label class="field">
+        <input id="password" name="password" type="password" autocomplete="current-password" required placeholder=" ">
+        <span>Password</span>
+        <button type="button" class="reveal" id="reveal" aria-label="Show password" aria-pressed="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/><path class="slash" d="M4 4l16 16"/></svg>
+        </button>
+      </label>
+
+      <p id="login-error" class="error" role="alert" aria-live="assertive"></p>
+
+      <button class="submit" type="submit">
+        <span class="submit-label">Sign in</span>
+        <span class="spinner" aria-hidden="true"></span>
+      </button>
+      <button type="button" class="back" id="back">&larr; Replay the intro</button>
+    </form>
+  </section>
+</main>
+
+<div class="ticker" aria-hidden="true">
+  <div class="track">
+    <span>NEGATIVITY <b class="up">&#9650;</b></span><span>TOPIC SHIFT <b>&#9670;</b></span><span>NEWS VOLUME <b class="up">&#9650;</b></span>
+    <span>HEARTBEAT <b class="ok">1&nbsp;Hz</b></span><span>FAIL-SAFE <b class="ok">ARMED</b></span>
+    <span>NEWS &rarr; SIGNALS &rarr; RISK &rarr; DECISION &rarr; BOTS</span>
+    <span><b class="ok">NORMAL</b> &middot; <b class="warn">CAUTION</b> &middot; <b class="bad">HALT</b></span>
+    <span>CENTRAL BANKS &middot; GLOBAL NEWS &middot; 24/7</span>
+    <span>NEGATIVITY <b class="up">&#9650;</b></span><span>TOPIC SHIFT <b>&#9670;</b></span><span>NEWS VOLUME <b class="up">&#9650;</b></span>
+    <span>HEARTBEAT <b class="ok">1&nbsp;Hz</b></span><span>FAIL-SAFE <b class="ok">ARMED</b></span>
+    <span>NEWS &rarr; SIGNALS &rarr; RISK &rarr; DECISION &rarr; BOTS</span>
+    <span><b class="ok">NORMAL</b> &middot; <b class="warn">CAUTION</b> &middot; <b class="bad">HALT</b></span>
+    <span>CENTRAL BANKS &middot; GLOBAL NEWS &middot; 24/7</span>
+  </div>
+</div>
+<div id="curtain" class="curtain" aria-hidden="true"></div>
+</body>
+</html>

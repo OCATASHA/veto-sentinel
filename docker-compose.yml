@@ -1,0 +1,26 @@
+# Local demo: monitor (synthetic replay) + Python SDK client + C++ SDK client.
+#   docker compose up --build
+# Dashboard: http://127.0.0.1:8000  (published on loopback only)
+services:
+  monitor:
+    build: .
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - vs-data:/data
+    environment:
+      # Set to require X-Operator-Token on operator/replay/fault endpoints.
+      - VETOSENTINEL_OPERATOR_TOKEN=${VETOSENTINEL_OPERATOR_TOKEN:-}
+
+  py-client:
+    build: .
+    depends_on: [monitor]
+    command: ["vetosentinel", "client-demo", "--endpoint", "tcp://monitor:5556", "--interval", "2"]
+
+  cpp-client:
+    build: ./clients/cpp
+    depends_on: [monitor]
+    command: ["tcp://monitor:5556"]
+
+volumes:
+  vs-data: {}

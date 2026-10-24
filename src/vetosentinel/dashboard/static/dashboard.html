@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Veto Sentinel · Console</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/dashboard.css">
+<script src="/static/theme.js"></script>
+<script src="/static/dashboard.js" defer></script>
+</head>
+<body data-state="HALT">
+<div class="bg" aria-hidden="true"><span class="blob b1"></span><span class="blob b2"></span><span class="blob b3"></span></div>
+<div class="curtain-in" aria-hidden="true"></div>
+
+<header class="topbar">
+  <a class="brand" href="/dashboard" aria-label="Veto Sentinel console">
+    <svg viewBox="0 0 64 64" aria-hidden="true"><path class="b-shield" d="M32 5 55 14v18c0 13.6-10.2 23.8-23 27C19.2 55.8 9 45.6 9 32V14z"/><path class="b-pulse" d="M17 34h8l4-9 6 16 4-8h8"/></svg>
+    <span>Veto<b>Sentinel</b></span>
+  </a>
+  <button class="top-status" id="topStatus" type="button" data-goto="overview" aria-label="Current level">
+    <span class="dot" aria-hidden="true"></span><span id="topStateWord">Starting…</span>
+  </button>
+  <div class="top-meta">
+    <span class="tm-risk">Risk <b id="topRisk">–</b></span>
+    <span class="tm-time" id="topTime">–</span>
+  </div>
+  <div class="grow"></div>
+  <label class="switch" title="Show the technical details behind every number">
+    <input type="checkbox" id="expertToggle">
+    <span class="track" aria-hidden="true"><span class="knob"></span></span>
+    <span class="switch-label">Expert details</span>
+  </label>
+  <button class="icon-btn" id="themeToggle" type="button" aria-label="Switch between light and dark theme"></button>
+  <div class="user">
+    <span class="avatar" id="avatar" aria-hidden="true">?</span>
+    <span class="user-name" id="userName">…</span>
+    <button class="btn ghost small" id="logoutBtn" type="button">Sign out</button>
+  </div>
+</header>
+
+<div class="notices">
+  <div class="notice syn" id="noticeSynthetic" hidden>
+    <span class="n-ico" data-icon="flask"></span>
+    <p><b>Demo data.</b> This is a replay of <em>invented</em> news (fictional banks and countries) so you can watch the system react. It is not real history.</p>
+  </div>
+  <div class="notice fb" id="noticeFallback" hidden>
+    <span class="n-ico" data-icon="cpu"></span>
+    <p><b>Simplified AI in use.</b> <span id="fallbackText"></span></p>
+  </div>
+  <div class="notice off" id="noticeOffline" hidden>
+    <span class="n-ico" data-icon="plug"></span>
+    <p><b>Connection to Veto Sentinel lost.</b> Showing the last data received. Trading bots don't depend on this page &mdash; they stop on their own if the heartbeat stops.</p>
+  </div>
+</div>
+
+<nav class="segments" role="tablist" aria-label="Dashboard sections" id="tabs">
+  <button role="tab" type="button" id="tabbtn-overview" aria-controls="tab-overview" data-tab="overview"><span data-icon="grid"></span><span>Overview</span></button>
+  <button role="tab" type="button" id="tabbtn-signals" aria-controls="tab-signals" data-tab="signals"><span data-icon="signals"></span><span>Warning signals</span></button>
+  <button role="tab" type="button" id="tabbtn-timeline" aria-controls="tab-timeline" data-tab="timeline"><span data-icon="timeline"></span><span>Timeline</span></button>
+  <button role="tab" type="button" id="tabbtn-news" aria-controls="tab-news" data-tab="news"><span data-icon="news"></span><span>Headlines</span></button>
+  <button role="tab" type="button" id="tabbtn-bots" aria-controls="tab-bots" data-tab="bots"><span data-icon="bot"></span><span>Trading bots</span></button>
+  <button role="tab" type="button" id="tabbtn-controls" aria-controls="tab-controls" data-tab="controls"><span data-icon="sliders"></span><span>Controls</span></button>
+  <button role="tab" type="button" id="tabbtn-how" aria-controls="tab-how" data-tab="how"><span data-icon="info"></span><span>How it works</span></button>
+  <span class="seg-indicator" aria-hidden="true"></span>
+</nav>
+
+<main>
+  <!-- ================================================================ OVERVIEW -->
+  <section class="panel" id="tab-overview" role="tabpanel" aria-labelledby="tabbtn-overview" hidden>
+    <div class="grid">
+      <article class="card hero span-8" id="heroCard">
+        <div class="orb" aria-hidden="true">
+          <span class="ring"></span><span class="ring"></span><span class="ring"></span>
+          <span class="core" id="orbIcon"></span>
+        </div>
+        <div class="hero-body">
+          <p class="eyebrow">Right now <span class="x mono" id="heroRule"></span></p>
+          <h1 id="heroTitle">Connecting…</h1>
+          <p class="lead" id="heroDesc">Fetching the latest assessment.</p>
+          <ul class="why" id="heroWhy"></ul>
+        </div>
+      </article>
+
+      <article class="card span-4 gauge-card">
+        <div class="card-head"><h2>Risk level</h2><button class="help" type="button" data-help="risk" aria-label="What is the risk level?">?</button></div>
+        <svg class="gauge" id="gauge" viewBox="-18 0 276 150" role="img" aria-labelledby="gaugeText"></svg>
+        <div class="gauge-readout">
+          <span class="figure" id="gaugeNum">–</span>
+          <span class="pill" id="gaugeWord">–</span>
+        </div>
+        <p class="caption" id="gaugeText">A normal day sits near 0. Above 2 means "be careful", above 3.5 means "stop".</p>
+      </article>
+
+      <article class="card span-4">
+        <div class="card-head"><h2>What trading bots may do</h2><button class="help" type="button" data-help="bots" aria-label="What do the bots do?">?</button></div>
+        <ul class="perms" id="perms"></ul>
+        <div class="size-row"><span>Largest position allowed</span><b id="sizeText">–</b></div>
+        <div class="meter"><span id="sizeBar"></span></div>
+      </article>
+
+      <article class="card span-8">
+        <div class="card-head"><h2>The three warning signals</h2><button class="btn ghost small" type="button" data-goto="signals">Explore <span data-icon="arrow"></span></button></div>
+        <div class="mini-signals" id="miniSignals"></div>
+      </article>
+
+      <article class="card span-8">
+        <div class="card-head"><h2>Risk over the last 24 hours</h2><span class="sub" id="miniSub">simulated time</span></div>
+        <div class="chart-box small"><canvas id="miniChart" role="img" aria-label="Risk score over the last 24 hours"></canvas></div>
+        <div class="legend" id="miniLegend"></div>
+      </article>
+
+      <article class="card span-4">
+        <div class="card-head"><h2>Latest changes</h2><button class="btn ghost small" type="button" data-goto="timeline">All <span data-icon="arrow"></span></button></div>
+        <ol class="changes" id="latestChanges"></ol>
+      </article>
+
+      <article class="card span-12 try">
+        <div class="card-head"><h2>Try it yourself</h2><span class="sub">a few one-click experiments</span></div>
+        <div class="quick">
+          <button class="qa" type="button" data-action="play"><span data-icon="play"></span><b>Play the replay</b><small>Watch days of news go by in minutes</small></button>
+          <button class="qa" type="button" data-action="jump-stress"><span data-icon="alert"></span><b>Jump to the crisis</b><small>Skip ahead to just before the big event</small></button>
+          <button class="qa" type="button" data-action="break"><span data-icon="scissors"></span><b>Break the heartbeat</b><small>See a trading bot protect itself</small></button>
+          <button class="qa" type="button" data-goto="how"><span data-icon="info"></span><b>How does it work?</b><small>The whole idea in seven steps</small></button>
+        </div>
+      </article>
+    </div>
+  </section>
+
+  <!-- ================================================================ SIGNALS -->
+  <section class="panel" id="tab-signals" role="tabpanel" aria-labelledby="tabbtn-signals" hidden>
+    <div class="grid">
+      <article class="card span-12 intro">
+        <h2>Three ways the news can warn us</h2>
+        <p>Veto Sentinel watches three things about the news and compares each one with what is <em>normal</em> for it. A reading of 0 means "a typical day"; the higher the number, the more unusual it is. Anything at or below normal counts as zero, so a calm signal can never hide a stressed one.</p>
+      </article>
+      <div class="signal-cards span-12" id="signalCards"></div>
+      <article class="card span-12">
+        <div class="card-head"><h2>What's pushing the risk score right now</h2><button class="help" type="button" data-help="weights" aria-label="How is the score combined?">?</button></div>
+        <div class="contrib" id="contrib"></div>
+        <div class="legend" id="contribLegend"></div>
+        <p class="caption">Risk score = 40% negativity + 30% topic change + 30% news volume.</p>
+      </article>
+    </div>
+  </section>
+
+  <!-- ================================================================ TIMELINE -->
+  <section class="panel" id="tab-timeline" role="tabpanel" aria-labelledby="tabbtn-timeline" hidden>
+    <div class="filter-row">
+      <div class="segmented" id="rangeSeg" role="group" aria-label="Time range">
+        <button type="button" data-range="6">6 hours</button>
+        <button type="button" data-range="24">24 hours</button>
+        <button type="button" data-range="72">3 days</button>
+        <button type="button" data-range="0" class="on">Everything</button>
+      </div>
+      <div class="series-toggles" id="seriesToggles" role="group" aria-label="Also show">
+        <span class="muted small">Also show:</span>
+        <label class="chip-toggle"><input type="checkbox" data-series="panic_z"><i class="key s1"></i>Negativity</label>
+        <label class="chip-toggle"><input type="checkbox" data-series="drift_z"><i class="key s2"></i>Topic change</label>
+        <label class="chip-toggle"><input type="checkbox" data-series="volume_z"><i class="key s3"></i>News volume</label>
+      </div>
+      <button class="btn ghost small" type="button" id="tableToggle" aria-pressed="false">Show as table</button>
+    </div>
+    <div class="grid">
+      <article class="card span-12">
+        <div class="card-head"><h2>Risk score over time</h2><span class="sub">simulated time · background colour = level at that moment</span></div>
+        <div class="chart-box big"><canvas id="bigChart" role="img" aria-label="Risk score over time with level shading"></canvas></div>
+        <div class="legend" id="bigLegend"></div>
+        <div class="table-view" id="tableView" hidden></div>
+      </article>
+      <article class="card span-12">
+        <div class="card-head"><h2>What happened, step by step</h2><span class="sub">newest first</span></div>
+        <ol class="story" id="story"></ol>
+      </article>
+    </div>
+  </section>
+
+  <!-- ================================================================ NEWS -->
+  <section class="panel" id="tab-news" role="tabpanel" aria-labelledby="tabbtn-news" hidden>
+    <div class="grid">
+      <div class="tiles span-12" id="newsTiles"></div>
+      <article class="card span-12">
+        <div class="card-head"><h2>Headlines pushing negativity up</h2><button class="help" type="button" data-help="headlines" aria-label="About these headlines">?</button></div>
+        <p class="caption top">The most negative headlines from the last hour, as scored by the AI. A longer, redder bar means the headline sounds more negative.</p>
+        <ul class="headlines" id="headlines"></ul>
+      </article>
+    </div>
+  </section>
+
+  <!-- ================================================================ BOTS -->
+  <section class="panel" id="tab-bots" role="tabpanel" aria-labelledby="tabbtn-bots" hidden>
+    <div class="grid">
+      <article class="card span-8 ecg-card">
+        <div class="card-head"><h2>Heartbeat monitor</h2><span class="sub">an example bot listening to Veto Sentinel</span></div>
+        <div class="ecg-box"><canvas id="ecg" role="img" aria-label="Heartbeat signal received by the example bot"></canvas><div class="ecg-badge" id="ecgBadge">–</div></div>
+        <div class="ecg-meta">
+          <span>Last heartbeat <b id="hbAge">–</b></span>
+          <span>Messages received <b id="hbCount">–</b></span>
+          <span>Times it recovered <b id="hbRecov">–</b></span>
+          <span class="x">seq <b id="hbSeq" class="mono">–</b></span>
+        </div>
+      </article>
+      <article class="card span-4 bot-card">
+        <div class="card-head"><h2>Example bot</h2></div>
+        <div class="bot-face" id="botFace"><span class="bot-ico" data-icon="bot"></span><b id="botTitle">–</b></div>
+        <p class="bot-desc" id="botDesc"></p>
+        <ul class="perms" id="botPerms"></ul>
+      </article>
+      <article class="card span-12">
+        <div class="card-head"><h2>How bots stay safe</h2></div>
+        <ol class="steps3">
+          <li style="--i:0"><span class="step-ico" data-icon="broadcast"></span><b>Veto Sentinel sends a heartbeat every second</b><p>Each one carries the current level and a running number, like a pulse.</p></li>
+          <li style="--i:1"><span class="step-ico" data-icon="bolt"></span><b>The bot checks its own copy before every order</b><p>That check takes nanoseconds and never waits on the network.</p></li>
+          <li style="--i:2"><span class="step-ico" data-icon="shield"></span><b>Anything odd? The bot stops itself</b><p>No heartbeat for 3 seconds, a garbled or missing message &rarr; it stops trading until two good heartbeats arrive.</p></li>
+        </ol>
+      </article>
+      <article class="card span-12">
+        <div class="card-head"><h2>Try to break it</h2><span class="sub">safe demo faults &mdash; nothing real is affected</span></div>
+        <div class="faults">
+          <button class="fault" type="button" data-fault="silence_5s"><span data-icon="scissors"></span><b>Cut the heartbeat for 5 seconds</b><small>After about 3 seconds of silence the bot stops itself, then recovers.</small></button>
+          <button class="fault" type="button" data-fault="malformed"><span data-icon="mailx"></span><b>Send a corrupted message</b><small>The bot rejects it and pauses until two good heartbeats arrive.</small></button>
+          <button class="fault" type="button" data-fault="seq_gap"><span data-icon="gap"></span><b>Make messages go missing</b><small>The bot spots the gap in the numbering and pauses.</small></button>
+        </div>
+      </article>
+      <article class="card span-12">
+        <div class="card-head"><h2>Problems the bot has caught</h2><span class="sub">since this page's bot started</span></div>
+        <div class="tiles inner" id="faultTiles"></div>
+      </article>
+    </div>
+  </section>
+
+  <!-- ================================================================ CONTROLS -->
+  <section class="panel" id="tab-controls" role="tabpanel" aria-labelledby="tabbtn-controls" hidden>
+    <div class="grid">
+      <article class="card span-12 player" id="playerCard">
+        <div class="card-head"><h2>Replay</h2><span class="sub" id="replaySub">–</span></div>
+        <div class="player-row">
+          <button class="play-btn" id="playBtn" type="button" aria-label="Play"><span data-icon="play"></span></button>
+          <div class="player-main">
+            <div class="player-time"><b id="simTime">–</b><span class="pill soft" id="replayStatus">–</span></div>
+            <div class="scrubber" id="scrubber"><div class="scrub-fill" id="scrubFill"></div><div class="scrub-head" id="scrubHead"></div></div>
+            <div class="scrub-labels"><span id="scrubStart">–</span><span id="scrubEnd">–</span></div>
+          </div>
+          <div class="player-side">
+            <button class="btn" type="button" id="stepBtn"><span data-icon="step"></span>Step 5 min</button>
+            <button class="btn" type="button" id="restartBtn"><span data-icon="restart"></span><span class="lbl">Restart</span></button>
+          </div>
+        </div>
+        <div class="speed-row">
+          <span class="muted">Speed</span>
+          <div class="segmented" id="speedSeg" role="group" aria-label="Replay speed">
+            <button type="button" data-speed="600">10 min / s</button>
+            <button type="button" data-speed="1800">30 min / s</button>
+            <button type="button" data-speed="3600">1 hour / s</button>
+            <button type="button" data-speed="10800">3 hours / s</button>
+            <button type="button" data-speed="43200">12 hours / s</button>
+          </div>
+        </div>
+      </article>
+      <article class="card span-12">
+        <div class="card-head"><h2>Jump to an event</h2><span class="sub">fast-forwards to 2 hours before it starts</span></div>
+        <div class="events" id="events"></div>
+      </article>
+      <article class="card span-12 danger" id="flattenCard">
+        <div class="card-head"><h2><span data-icon="siren"></span> Emergency instruction (FLATTEN)</h2><button class="help" type="button" data-help="flatten" aria-label="About FLATTEN">?</button></div>
+        <p>Tells every connected bot that a <b>human</b> wants positions closed. Veto Sentinel never trades by itself &mdash; it only records and broadcasts the instruction. It takes two deliberate steps.</p>
+        <div class="fsteps" id="fsteps">
+          <div class="fstep">
+            <span class="num">1</span>
+            <div class="fbody">
+              <label>Your name<input id="opName" maxlength="64" autocomplete="name"></label>
+              <label>Reason<input id="opReason" maxlength="500" placeholder="e.g. market-wide liquidity crisis"></label>
+              <button class="btn danger" type="button" id="flatReq">Request emergency</button>
+            </div>
+          </div>
+          <div class="fstep" id="fstep2" aria-disabled="true">
+            <span class="num">2</span>
+            <div class="fbody">
+              <label>Confirmation code<input id="opCode" maxlength="16" autocomplete="off" spellcheck="false"></label>
+              <button class="btn danger solid" type="button" id="flatConf" disabled>Confirm emergency</button>
+              <span class="countdown" id="codeTimer"></span>
+            </div>
+          </div>
+        </div>
+        <div class="flat-active" id="flatActive" hidden>
+          <span data-icon="siren"></span>
+          <p id="flatActiveText"></p>
+          <button class="btn" type="button" id="flatClear">Cancel emergency (go to Stop)</button>
+        </div>
+        <p class="op-msg" id="opMsg" role="status"></p>
+      </article>
+    </div>
+  </section>
+
+  <!-- ================================================================ HOW IT WORKS -->
+  <section class="panel" id="tab-how" role="tabpanel" aria-labelledby="tabbtn-how" hidden>
+    <div class="grid">
+      <article class="card span-12">
+        <div class="card-head"><h2>From headline to safe trading in seven steps</h2><span class="sub">click a step</span></div>
+        <div class="pipeline" id="pipeline" role="group" aria-label="Pipeline steps"></div>
+        <div class="pipe-detail" id="pipeDetail" aria-live="polite"><h3></h3><p></p></div>
+      </article>
+      <article class="card span-12">
+        <div class="card-head"><h2>The four levels</h2></div>
+        <div class="levels" id="levels"></div>
+      </article>
+      <article class="card span-6">
+        <div class="card-head"><h2>Words you'll see</h2></div>
+        <div class="glossary" id="glossary"></div>
+      </article>
+      <article class="card span-6">
+        <div class="card-head"><h2>Under the hood</h2><span class="sub">for the curious</span></div>
+        <dl class="kv" id="hood"></dl>
+        <h3 class="small-h">News sources</h3>
+        <table class="mini-table"><thead><tr><th>Source</th><th>Last success</th><th>Items</th><th>Last error</th></tr></thead><tbody id="sources"></tbody></table>
+      </article>
+    </div>
+  </section>
+</main>
+
+<div class="toasts" id="toasts" aria-live="polite" aria-atomic="false"></div>
+<div class="popover" id="popover" role="dialog" aria-modal="false" hidden><p id="popoverText"></p></div>
+<div class="chart-tip" id="chartTip" hidden></div>
+</body>
+</html>
