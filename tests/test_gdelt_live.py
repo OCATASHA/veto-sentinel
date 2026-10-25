@@ -69,6 +69,8 @@ def test_fetch_latest_then_catch_up_and_cache(tmp_path):
     fake.newest = NEWEST + timedelta(minutes=45)  # three new files appeared
     r = a.fetch(fake.newest)
     assert r.ok and len(r.items) == 9 and a.last_ts == fake.newest
+    # downloads go to the storage bucket: the data.gdeltproject.org front end caches 404s for an hour
+    assert fake.calls and all(u.startswith("https://storage.googleapis.com/data.gdeltproject.org/") for u in fake.calls)
     # a second adapter on the same cache reuses parsed files instead of downloading them
     b = adapter(tmp_path, fake)
     before = len(fake.calls)
@@ -142,13 +144,47 @@ def test_backfill_is_hourly_weighted_with_coverage_and_gaps(tmp_path):
     seen = []
     r = a.backfill(NEWEST, lambda d, t: seen.append((d, t)))
     assert r.ok and r.coverage_start == NEWEST - timedelta(days=1)
-    assert len(r.items) == 3 * 25  # the missing hourly file was replaced by one from the same hour
-    assert {i.extra["count_weight"] for i in r.items} == {4.0}
-    assert r.gaps == [] and seen[-1] == (25, 25)
+    # 23 hourly files up to 10:00 (the missing one replaced by a file from the same hour),
+    # then the last two hours file by file
+    hourly = [i for i in r.items if i.extra["count_weight"] == 4.0]
+    assert len(hourly) == 3 * 23 and len(r.items) == 3 * 23 + 3 * 8
+    assert {i.extra["count_weight"] for i in r.items} == {4.0, 1.0}
+    assert r.gaps == [] and seen[-1] == (31, 31)
     whole_hour_missing = FakeGdelt(missing={NEWEST - timedelta(hours=2, minutes=15 * k) for k in range(4)})
     r2 = adapter(tmp_path / "b", whole_hour_missing, backfill_days=1).backfill(NEWEST)
-    assert len(r2.gaps) == 1 and len(r2.items) == 3 * 24
-    assert a.last_ts == NEWEST  # live polling continues after the backfilled hour
+    assert len(r2.gaps) == 1 and len(r2.items) == 3 * 22 + 3 * 8
+    assert a.last_ts == a.data_through == NEWEST and not a.pending  # live polling continues from here
+
+
+def test_backfill_leaves_a_newest_file_that_is_not_uploaded_yet_pending(tmp_path):
+    top = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)  # announced on the hour...
+    fake = FakeGdelt(newest=top, missing={top})  # ...but not downloadable yet
+    a = adapter(tmp_path, fake, backfill_days=1)
+    r = a.backfill(top)
+    stamp = top.strftime("%Y-%m-%dT%H:%M:%SZ")
+    assert r.ok and not any(i.published_raw == stamp for i in r.items)
+    assert a.pending == {top} and a.data_through == top - timedelta(minutes=15)  # not complete yet
+    fake.missing = set()
+    r = a.fetch(top)  # it has been uploaded: the first live poll collects it instead of skipping it
+    assert len(r.items) == 3 and {i.published_raw for i in r.items} == {stamp}
+    assert not a.pending and a.data_through == top
+
+
+def test_backfill_counts_news_volume_once_around_the_live_start(tmp_path):
+    newest = NEWEST + timedelta(minutes=30)
+    a = adapter(tmp_path, FakeGdelt(newest=newest), backfill_days=2)
+    items = a.backfill(newest).items + a.fetch(newest).items  # the warm start, then the first live poll
+    it = IntensityTracker(IntensityConfig(), NormalizerConfig())
+    for i in items:
+        assert i.published_raw is not None
+        it.add(datetime.fromisoformat(i.published_raw), i.extra["count_weight"])
+    hour = timedelta(hours=1)
+    # every 60-minute window the first live assessments use holds exactly four files' worth
+    # (3 headlines each), with no hourly sample counted on top of the 15-minute files
+    for back in (45, 30, 15, 0):
+        t = newest - timedelta(minutes=back)
+        assert it.count(t - hour, t) == 12, t
+    assert it.count(newest - 6 * hour, newest - 5 * hour) == 12  # hourly samples: 3 headlines x 4
 
 
 def test_weighted_volume_counts_match_live_counts():

@@ -56,8 +56,9 @@ designed fail-safe, not a detection.
 
 Data: 49,820 finance-themed page titles from GDELT GKG 2.1 raw files, 2023-02-27 to
 2023-03-15. One 15-minute file per hour was used. One file (2023-03-09T00:00) returned 404
-and is declared as a data gap. The data is not committed: GDELT terms apply, and it is
-reproducible with the command above.
+and is declared as a data gap. The fixture is committed (`data/historical/gdelt_gkg_svb_2023.jsonl`,
+14 MB) so the replay runs offline. It is derived from GDELT data, so GDELT's terms of use apply,
+and the command above rebuilds it.
 
 **Event label.** The window 2023-03-08T21:00Z → 2023-03-14T00:00Z was chosen by the
 implementer from public knowledge of the timeline: SVB's loss and capital-raise announcement

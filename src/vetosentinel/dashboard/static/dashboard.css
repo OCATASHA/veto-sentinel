@@ -7,6 +7,9 @@
   initial-value: #d03b3b;
 }
 
+/* `hidden` must win over component display rules (e.g. .btn's inline-flex) */
+[hidden] { display: none !important; }
+
 :root {
   color-scheme: dark;
   --page: #070b16;
@@ -693,4 +696,5 @@ main { max-width: 1480px; margin: 0 auto; padding: 18px 22px 64px; }
 .rel-tag { display: inline-block; margin-left: 8px; padding: 1px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 700; vertical-align: 2px; background: var(--surface-3); color: var(--ink-2); white-space: nowrap; }
 .rel-tag[data-level="high"] { background: var(--s1); color: #fff; }
 .rel-tag[data-level="mid"] { background: color-mix(in oklab, var(--s1) 35%, var(--surface-3)); color: var(--ink); }
+.rel-tag[data-level="low"] { background: color-mix(in oklab, var(--s1) 14%, var(--surface-3)); color: var(--ink-2); }
 @media (prefers-reduced-motion: reduce) { .focus-dlg[open], .fd-stat, .fd-top li, .fd-ico .ico { animation: none; } }

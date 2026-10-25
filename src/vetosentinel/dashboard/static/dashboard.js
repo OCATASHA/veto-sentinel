@@ -326,6 +326,7 @@
       }
     }
     if (focus) $(`#tabbtn-${name}`).focus();
+    if (prev !== name && window.scrollY > 0) window.scrollTo({ top: 0 }); // a new section starts at its top
     hideTips();
     placeIndicator();
     $(`#tabbtn-${name}`).scrollIntoView({ block: "nearest", inline: "nearest", behavior: reduceMotion ? "auto" : "smooth" });
@@ -1198,7 +1199,7 @@
       let txt = "";
       if (s.mode === "live") {
         txt = `Live: news assessed up to ${s.as_of ? fmtClock(s.as_of) : "–"} UTC. `;
-        if (g) txt += `GDELT is checked every ${Math.round(g.poll_seconds / 60)} min and publishes a new batch every 15 min, usually 15–60 min after the fact`
+        if (g) txt += `GDELT is checked every ${Math.round(g.poll_seconds / 60)} min and publishes a new batch every 15 min`
           + (g.late_files ? ` (${g.late_files} late batch${g.late_files > 1 ? "es" : ""} still awaited).` : ".");
         txt += " Central-bank feeds only change when they publish (a few times a day).";
       }
@@ -1224,15 +1225,24 @@
       const word = p == null ? "not scored" : p >= 0.65 ? "Negative" : p >= 0.35 ? "Mixed" : "Calm";
       const rel = x.relevance;
       return h("li", { style: { "--i": String(i) } },
-        h("div", { class: "hl-text" }, x.headline,
-          rel == null ? null : h("span", { class: "rel-tag", dataset: { level: rel >= 0.9 ? "high" : rel >= 0.5 ? "mid" : "low" },
-            text: rel >= 0.5 ? `${Math.round(rel * 100)}% on topic` : "off topic" })),
+        h("div", { class: "hl-text" }, x.headline, rel == null ? null : relTag(rel, s.focus)),
         h("div", { class: "neg" },
           h("div", { class: "neg-label" }, h("span", { text: word }), h("b", { text: p == null ? "–" : `${Math.round(p * 100)}%` })),
           h("div", { class: "neg-track" }, h("span", { style: { width: `${p == null ? 0 : Math.max(3, p * 100)}%`, background: `var(--${tone === "na" ? "axis" : tone})` } }))),
         h("div", { class: "hl-meta" }, h("span", { text: x.source }), h("span", { text: fmtFull(x.event_time) }),
           h("span", { class: "x mono", text: `${x.headline_id} · ${x.sentiment_impl || ""}` })));
     }));
+  }
+
+  // Same bands as the Optimize-for dialog: off topic < 10% ≤ slightly < 50% ≤ mostly < 90% ≤ clearly.
+  function relTag(rel, focus) {
+    const b = focus && focus.background_weight != null ? focus.background_weight : 0.05;
+    const w = b + (1 - b) * rel;
+    return h("span", {
+      class: "rel-tag", dataset: { level: rel >= 0.9 ? "high" : rel >= 0.5 ? "mid" : rel >= 0.1 ? "low" : "off" },
+      text: rel >= 0.1 ? `${Math.round(rel * 100)}% on topic` : "off topic",
+      title: `Relevance to your focus ${Math.round(rel * 100)}%: this headline counts ${w.toFixed(2)}× as much as a fully matching one.`,
+    });
   }
 
   // ================================================================ optimize for (focus)

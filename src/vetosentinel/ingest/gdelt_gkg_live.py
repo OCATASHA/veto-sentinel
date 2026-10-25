@@ -11,10 +11,18 @@ are static downloads announced in ``lastupdate.txt`` every 15 minutes, with no q
 * ``backfill(now)`` loads the past ``backfill_days`` from the archive at one file per hour, so the
   monitor knows what "normal" looks like immediately instead of after days of running. Each hourly
   headline carries ``count_weight=4`` (it stands for four 15-minute files) so news-volume
-  comparisons stay consistent with live data. Missing archive files become declared gaps.
-* GDELT announces files in ``lastupdate.txt`` before they are downloadable; the lag was
-  observed at 30-60 minutes. Announced-but-missing files are kept *pending* and retried on every
-  poll for up to ``late_grace``; later files are ingested as soon as they exist. Only after the
+  comparisons stay consistent with live data. Missing archive files become declared gaps. The
+  last ``RECENT`` (two hours) are loaded file by file instead: an hourly sample sits at its own
+  timestamp but stands for the hour before it, so a 60-minute window holding both a sample and
+  later 15-minute files would count part of that hour twice. Ending the samples two hours back
+  keeps every live assessment clear of that overlap (only the warm-up's baseline steps see it).
+  Recent files that are announced but not downloadable yet are left pending for ``fetch``.
+* Files are downloaded from the Cloud Storage bucket (see gkg.py). The data.gdeltproject.org
+  front end caches "not found" for an hour, which once made files look 30-60 minutes late.
+  A file announced in ``lastupdate.txt`` can still be missing for a while (GDELT announces a
+  batch shortly before uploading it, and can be late), so announced-but-missing files are kept
+  *pending* and retried on every poll for up to ``late_grace``; later files are ingested as soon
+  as they exist. Only after the
   grace period is a file treated as skipped (a tiny declared gap). ``data_through`` reports the
   time up to which every file has been ingested (or given up on): live mode assesses the news as
   of that time instead of mistaking not-yet-published news for a quiet hour.
@@ -37,12 +45,12 @@ from pathlib import Path
 import httpx
 
 from vetosentinel.ingest.base import USER_AGENT, FetchResult
-from vetosentinel.ingest.gkg import BASE, DEFAULT_THEMES, parse_gkg
+from vetosentinel.ingest.gkg import BASE, BUCKET, DEFAULT_THEMES, parse_gkg
 from vetosentinel.models import DataOrigin, RawItem, TimestampQuality
 
 log = logging.getLogger(__name__)
 
-LASTUPDATE = "http://data.gdeltproject.org/gdeltv2/lastupdate.txt"
+LASTUPDATE = BUCKET + "lastupdate.txt"
 STEP = timedelta(minutes=15)
 EPS = timedelta(seconds=1)
 MISSING_FINAL_AFTER = timedelta(hours=24)  # younger 404s may still appear, so they are retried
@@ -50,6 +58,7 @@ LATE_GRACE = timedelta(hours=3)  # how long an announced file may stay undownloa
 # Once files this much newer have arrived, a still-missing file stops holding back data_through
 # (it was probably skipped by GDELT); it is still collected if it turns up within LATE_GRACE.
 STOP_WAITING_AFTER = timedelta(minutes=60)
+RECENT = timedelta(hours=2)  # backfill loads at least this much recent news file by file
 
 
 class MissingFile(Exception):
@@ -156,33 +165,46 @@ class GdeltGkgLiveAdapter:
                 errors.append(f"{_stamp(ts)}: {type(e).__name__}: {e}")
                 continue
             items += self.items(rows, 1.0)
-            self.pending.discard(ts)
-            self.late.discard(ts)
-            if self.newest_ingested is None or ts > self.newest_ingested:
-                self.newest_ingested = ts
+            self._ingested(ts)
+        self._settle()
+        if errors and not items:
+            return FetchResult(ok=False, error="; ".join(errors)[:300])
+        return FetchResult(ok=True, items=items, gaps=gaps)
+
+    def _ingested(self, ts: datetime) -> None:
+        self.pending.discard(ts)
+        self.late.discard(ts)
+        if self.newest_ingested is None or ts > self.newest_ingested:
+            self.newest_ingested = ts
+
+    def _settle(self) -> None:
+        """Stop waiting for files long overtaken by newer ones; recompute ``data_through``."""
         if self.newest_ingested is not None:
             stale = {ts for ts in self.pending if self.newest_ingested - ts >= STOP_WAITING_AFTER}
             self.pending -= stale
             self.late |= stale
         self.data_through = (min(self.pending) - STEP) if self.pending else self.last_ts
-        if errors and not items:
-            return FetchResult(ok=False, error="; ".join(errors)[:300])
-        return FetchResult(ok=True, items=items, gaps=gaps)
 
     # ------------------------------------------------------------------ warm-up
     def backfill(self, now: datetime, progress: Callable[[int, int], None] | None = None) -> FetchResult:
         if self.backfill_days <= 0:
             return FetchResult(ok=True)
         try:
-            newest, _ = self.latest()
+            newest, md5 = self.latest()
         except (httpx.HTTPError, ValueError) as e:
             return FetchResult(ok=False, error=f"lastupdate.txt: {type(e).__name__}: {e}")
-        end = newest.replace(minute=0)
-        times = []
-        t = end - timedelta(days=self.backfill_days)
-        while t <= end:
-            times.append(t)
+        split = (newest - RECENT).replace(minute=0)  # hourly samples up to here, then every file
+        hours = []
+        t = min((newest - timedelta(days=self.backfill_days)).replace(minute=0), split)
+        while t <= split:
+            hours.append(t)
             t += timedelta(hours=1)
+        recent = []
+        t = split + STEP
+        while t <= newest:
+            recent.append(t)
+            t += STEP
+        total = len(hours) + len(recent)
         results: dict[datetime, list[dict] | None] = {}
         failed = []
 
@@ -198,18 +220,38 @@ class GdeltGkgLiveAdapter:
                     failed.append(f"{_stamp(ts - k * STEP)}: {e}")
                     break
             if progress:
-                progress(len(results), len(times))
+                progress(len(results), total)
+
+        def single(ts: datetime) -> None:
+            results[ts] = None
+            try:
+                results[ts] = self.rows(ts, md5 if ts == newest else None)
+            except MissingFile:
+                pass  # announced but not uploaded yet: fetch() retries it
+            except (httpx.HTTPError, ValueError) as e:
+                failed.append(f"{_stamp(ts)}: {e}")
+            if progress:
+                progress(len(results), total)
 
         with ThreadPoolExecutor(self.workers) as pool:
-            list(pool.map(one, times))
+            list(pool.map(one, hours))
+            list(pool.map(single, recent))
         if failed:
             log.warning("%d archive file(s) could not be downloaded, e.g. %s", len(failed), failed[0])
         items, gaps = [], []
-        for ts in times:
+        for ts in hours:
             rows = results.get(ts)
             if rows is None:
                 gaps.append((ts - EPS, ts + EPS))
             else:
                 items += self.items(rows, 4.0)  # one hourly file stands for four 15-minute files
-        self.last_ts = self.data_through = end
-        return FetchResult(ok=True, items=items, coverage_start=times[0], gaps=gaps)
+        self.last_ts = newest
+        for ts in recent:
+            rows = results.get(ts)
+            if rows is None:
+                self.pending.add(ts)
+            else:
+                items += self.items(rows, 1.0)
+                self._ingested(ts)
+        self._settle()
+        return FetchResult(ok=True, items=items, coverage_start=hours[0], gaps=gaps)

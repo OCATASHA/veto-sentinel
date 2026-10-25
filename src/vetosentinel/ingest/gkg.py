@@ -6,6 +6,12 @@ GDELT publishes one GKG file every 15 minutes at
 Each row is one article; we keep rows whose themes match finance/banking prefixes and take the
 headline from ``<PAGE_TITLE>`` in the V2EXTRASXML column. Timestamps are 15-minute capture-batch
 times, not publication times.
+
+Files are downloaded from the Cloud Storage bucket behind data.gdeltproject.org
+(``storage.googleapis.com/data.gdeltproject.org``). The data.gdeltproject.org front end caches
+"not found" for an hour (``cache-control: public, max-age=3600``), so a file requested a moment
+before GDELT uploads it stays 404 there for up to an hour; the bucket's 404s are not cached
+(``max-age=0``). The bytes are the same (checked against the MD5 in lastupdate.txt).
 """
 
 from __future__ import annotations
@@ -18,7 +24,8 @@ import zipfile
 from datetime import UTC, datetime, timedelta
 from html import unescape
 
-BASE = "http://data.gdeltproject.org/gdeltv2/{}.gkg.csv.zip"
+BUCKET = "https://storage.googleapis.com/data.gdeltproject.org/gdeltv2/"
+BASE = BUCKET + "{}.gkg.csv.zip"
 # Narrow finance/banking themes (theme-name prefixes). Broad families such as EPU_POLICY match
 # most political news and are deliberately excluded.
 DEFAULT_THEMES = ("ECON_STOCKMARKET", "ECON_WORLDCURRENCIES", "ECON_INFLATION", "ECON_INTEREST_RATE",

@@ -15,10 +15,13 @@ This is a hackathon prototype. Each item below is a known gap, not a hidden one.
 - **GDELT DOC search API** refused our multi-term query with HTTP 429 on every probe (2026-10-24),
   even with long waits; a one-word query worked. It is therefore disabled. Live GDELT news comes from
   the 15-minute GKG raw files instead (no query limits), which was verified working live.
-- **GDELT publishes with a lag.** Files are announced 30-60 minutes before they can be downloaded,
-  and some are skipped entirely (the 19:00 UTC file on 2026-10-24 returned 404). Late files are
-  retried for up to 3 hours. Live mode assesses the news *as of the time its data is complete*,
-  typically 30-60 minutes behind real time, and is not ready if that lag exceeds 2 hours.
+- **GDELT publishes in 15-minute batches.** Files are fetched from the Cloud Storage bucket
+  (`storage.googleapis.com/data.gdeltproject.org`). The data.gdeltproject.org front end caches
+  "not found" for an hour, so a file requested just before upload stayed 404 there for up to an
+  hour. On 2026-10-24 this looked like 30-60 minute publishing lags and skipped files, and it froze
+  live news for 45 minutes. Late files are still retried for up to 3 hours. Live mode assesses the
+  news *as of the time its data is complete*, normally a few minutes behind real time, and is not
+  ready if that lag exceeds 2 hours.
 - **Federal Reserve** `press_all.xml`, although listed on federalreserve.gov/feeds, returned 404 when
   probed. The config uses the monetary-policy and banking-regulation feeds instead (both returned 200).
   ECB and BoE RSS returned 200. Feed availability and terms can change at any time.
@@ -26,7 +29,8 @@ This is a hackathon prototype. Each item below is a known gap, not a hidden one.
   API key) the monitor would mostly sit at CAUTION or HALT. That's deliberate: sparse news is not
   evidence of calm.
 - **Live warm start depends on the GDELT archive.** At startup, live mode loads the last 15 days
-  from GDELT (hourly samples, weighted to match live 15-minute files) and replays them so it is
+  from GDELT (hourly samples, weighted to match live 15-minute files; the last two hours file by
+  file, so no hour is counted twice where the samples meet live data) and replays them so it is
   ready at once. The first start downloads about 1-2 GB and scores ~40k headlines (minutes); later
   starts use the caches in `data/` and take seconds. If GDELT is unreachable at startup, it falls
   back to learning from scratch (days). Each fresh start still begins at "Stop" and relaxes one
