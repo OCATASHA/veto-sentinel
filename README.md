@@ -1,15 +1,14 @@
 # Veto Sentinel
 
-**An independent, explainable, fail-safe news-based risk monitor for automated trading systems (hackathon prototype).**
+**An independent news-based fail-safe for automated trading systems (hackathon prototype).**
 
 Veto Sentinel watches financial-news headlines and central-bank communications, scores how
-unusual and stressed the news narrative is, and publishes a graduated risk state
+unusual and stressed the news narrative is, and publishes a calculated risk state
 (`NORMAL` / `CAUTION` / `HALT` / operator-only `FLATTEN`) over ZeroMQ to strategy clients. The
 clients fail safe: if the monitor is stale, silent, malformed, out of sequence or not ready,
 they block new orders locally, without making a network call on the order path.
 
-> Veto Sentinel is a **risk veto**, not a trading strategy, price predictor or liquidation
-> engine. It is meant to make automated systems more cautious and observable. It does not
+> Veto Sentinel is a **risk veto**, not a trading strategy. It is meant to make automated systems more cautious and observable. It does not
 > claim to eliminate risk, predict crises, or improve profitability.
 
 ![The Veto Sentinel console replaying real March 2023 news: a demo bot stops itself when its heartbeat is cut, then the bank news turns and the level goes to Stop](docs/media/dashboard.gif)
