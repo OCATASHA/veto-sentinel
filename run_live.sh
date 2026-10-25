@@ -13,6 +13,9 @@
 # Stop with Ctrl+C.
 set -euo pipefail
 cd "$(dirname "$0")"
+# Optional local settings and secrets, never committed (git-ignored): e.g. GEMINI_API_KEY=...,
+# VETOSENTINEL_NTFY_URL=https://ntfy.sh/<long random topic>
+if [[ -f .env ]]; then set -a; source .env; set +a; fi
 
 PORT=8002
 PUB_PORT=5558

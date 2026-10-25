@@ -9,6 +9,7 @@ Exponential backoff after failures and per-adapter minimum poll intervals are ha
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Protocol
@@ -77,6 +78,8 @@ class AdapterHealth:
     total_items: int = 0
     total_malformed: int = 0
     next_allowed: datetime | None = None
+    last_duration_s: float | None = None  # wall time of the last fetch (download + parse)
+    last_new_items: int = 0
 
 
 class AdapterRunner:
@@ -94,12 +97,15 @@ class AdapterRunner:
     def run(self, now: datetime) -> FetchResult:
         h = self.health
         h.last_attempt = now
+        t0 = time.perf_counter()
         try:
             res = self.adapter.fetch(now)
         except Exception as e:  # noqa: BLE001 - adapter bugs must not kill the service
             log.exception("adapter %s raised", self.adapter.name)
             res = FetchResult(ok=False, error=f"adapter exception {type(e).__name__}: {e}")
         h.total_malformed += res.malformed
+        h.last_duration_s = time.perf_counter() - t0
+        h.last_new_items = len(res.items)
         if res.ok:
             h.last_success = now
             h.last_error = ""

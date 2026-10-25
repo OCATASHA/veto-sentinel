@@ -3,7 +3,13 @@
 #include <algorithm>
 #include <charconv>
 #include <cmath>
+#include <cstdio>
+#include <ctime>
 #include <iostream>
+#include <memory>
+#include <random>
+
+#include <unistd.h>
 
 #include <nlohmann/json.hpp>
 #include <zmq.hpp>
@@ -166,7 +172,30 @@ std::optional<Message> parse_message(std::string_view payload, std::string& erro
   m.fallback_in_use = j["fallback_in_use"].get<bool>();
   if (!(v = need("data_origin")) || !v->is_string()) { if (error.empty()) error = "bad data_origin"; return std::nullopt; }
   m.data_origin = v->get<std::string>();
+  if (auto it = j.find("telemetry"); it != j.end() && !it->is_null()) {  // optional, like the Python schema
+    if (!it->is_string() || it->get_ref<const std::string&>().size() > 200) { error = "bad telemetry"; return std::nullopt; }
+    m.telemetry = it->get<std::string>();
+  }
   return m;
+}
+
+std::string resolve_telemetry(std::string_view advertised, std::string_view sub_endpoint) {
+  auto split = [](std::string_view e, std::string& host, std::string& port) {
+    if (e.substr(0, 6) != "tcp://") return false;
+    e.remove_prefix(6);
+    const auto c = e.rfind(':');
+    if (c == std::string_view::npos || c == 0 || c + 1 >= e.size()) return false;
+    host = std::string(e.substr(0, c));
+    port = std::string(e.substr(c + 1));
+    return std::all_of(port.begin(), port.end(), [](char ch) { return ch >= '0' && ch <= '9'; });
+  };
+  std::string host, port, sub_host, sub_port;
+  if (!split(advertised, host, port)) return {};
+  if ((host == "*" || host == "0.0.0.0" || host == "127.0.0.1" || host == "localhost") &&
+      split(sub_endpoint, sub_host, sub_port))
+    host = sub_host;
+  if (host == "*") host = "127.0.0.1";
+  return "tcp://" + host + ":" + port;
 }
 
 // ------------------------------------------------------------------ tracker
@@ -254,6 +283,7 @@ std::vector<Transition> StateTracker::on_payload(std::string_view payload, std::
   }
 
   stats_.valid++;
+  last_latency_ms_ = duration<double, std::milli>(now_wall - msg->ts).count();
   last_message_ = *msg;
   last_valid_mono_ns_.store(now, std::memory_order_release);
   if (cfg_.honor_advertised_timeout)
@@ -282,12 +312,55 @@ TrackerSnapshot StateTracker::snapshot(std::int64_t now) const {
   std::lock_guard lk(mu_);
   TrackerSnapshot s{effective_state(now), in_fault_, fault_, fault_detail_, publisher_id_, last_seq_,
                     std::nullopt, std::nullopt, stats_};
-  if (last_message_) { s.published_state = last_message_->state; s.risk_score = last_message_->risk_score; }
+  if (last_message_) {
+    s.published_state = last_message_->state;
+    s.risk_score = last_message_->risk_score;
+    s.telemetry = last_message_->telemetry;
+  }
+  const auto lv = last_valid_mono_ns_.load(std::memory_order_acquire);
+  if (lv >= 0) s.heartbeat_age_ms = static_cast<double>(now - lv) / 1e6;
+  s.bus_latency_ms = last_latency_ms_;
   return s;
 }
 
+std::string StateTracker::telemetry_endpoint() const {
+  std::lock_guard lk(mu_);
+  return last_message_ ? last_message_->telemetry : std::string{};
+}
+
 // ------------------------------------------------------------------ client
-Client::Client(ClientConfig cfg, Hooks hooks) : cfg_(cfg), hooks_(std::move(hooks)), tracker_(std::move(cfg)) {}
+namespace {
+
+std::string random_id() {
+  std::random_device rd;
+  std::mt19937_64 gen((static_cast<std::uint64_t>(rd()) << 32) ^ rd());
+  char buf[17];
+  std::snprintf(buf, sizeof buf, "%016llx", static_cast<unsigned long long>(gen()));
+  return std::string(buf, 12);
+}
+
+std::string iso_now_ms() {
+  const auto now = system_clock::now();
+  const std::time_t t = system_clock::to_time_t(now);
+  std::tm tm{};
+  gmtime_r(&t, &tm);
+  const auto ms = duration_cast<milliseconds>(now.time_since_epoch()).count() % 1000;
+  char buf[40];
+  std::snprintf(buf, sizeof buf, "%04d-%02d-%02dT%02d:%02d:%02d.%03dZ", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+                tm.tm_hour, tm.tm_min, tm.tm_sec, static_cast<int>(ms));
+  return buf;
+}
+
+std::string hostname() {
+  char buf[256] = {};
+  if (gethostname(buf, sizeof buf - 1) != 0) return "unknown";
+  return std::string(buf).substr(0, 64);
+}
+
+}  // namespace
+
+Client::Client(ClientConfig cfg, Hooks hooks)
+    : cfg_(cfg), hooks_(std::move(hooks)), tracker_(std::move(cfg)), client_id_(random_id()) {}
 
 Client::~Client() { stop(); }
 
@@ -305,7 +378,7 @@ void Client::stop() {
 
 State Client::current_state() const noexcept { return tracker_.effective_state(steady_now_ns()); }
 
-bool Client::can_submit_order(bool opening) const noexcept {
+bool Client::decide(bool opening) const noexcept {
   switch (current_state()) {
     case State::NORMAL: return true;
     case State::CAUTION: return !opening;
@@ -313,7 +386,17 @@ bool Client::can_submit_order(bool opening) const noexcept {
   }
 }
 
+bool Client::can_submit_order(bool opening) const noexcept {
+  if (decide(opening)) return true;
+  if (cfg_.shadow) {  // allow, but count it: shadow mode never blocks
+    would_block_.fetch_add(1, std::memory_order_relaxed);
+    return true;
+  }
+  return false;
+}
+
 double Client::position_limit(double normal_limit) const noexcept {
+  if (cfg_.shadow) return normal_limit;
   switch (current_state()) {
     case State::NORMAL: return normal_limit;
     case State::CAUTION: return normal_limit * cfg_.caution_position_fraction;
@@ -329,8 +412,9 @@ void Client::dispatch(const std::vector<Transition>& ts) {
   for (const auto& t : ts) {
     try {
       if (hooks_.on_state_change) hooks_.on_state_change(t.old_state, t.new_state, t.reason);
-      if (t.new_state == State::CAUTION && hooks_.on_caution) hooks_.on_caution(cfg_.caution_position_fraction, t.reason);
-      if (t.new_state == State::HALT && hooks_.on_halt) hooks_.on_halt(t.reason);
+      // shadow mode only observes: no limit changes, no cancellation requests
+      if (t.new_state == State::CAUTION && hooks_.on_caution && !cfg_.shadow) hooks_.on_caution(cfg_.caution_position_fraction, t.reason);
+      if (t.new_state == State::HALT && hooks_.on_halt && !cfg_.shadow) hooks_.on_halt(t.reason);
       if (t.new_state == State::FLATTEN && hooks_.on_flatten) hooks_.on_flatten(t.reason);
     } catch (const std::exception& e) {
       std::cerr << "vetosentinel: hook threw: " << e.what() << "\n";  // never kill the SDK threads
@@ -372,11 +456,87 @@ void Client::subscriber_loop() {
   }
 }
 
+void Client::measure_check() {
+  constexpr int kCalls = 1'000'000;
+  std::uint64_t sink = 0;
+  const auto t0 = steady_now_ns();
+  for (int i = 0; i < kCalls; ++i) sink += decide(true) ? 1u : 0u;  // decide() is the gate minus shadow counting
+  const auto dt = steady_now_ns() - t0;
+  bench_sink_.store(sink, std::memory_order_relaxed);  // keeps the loop from being optimised away
+  check_ns_.store(static_cast<double>(dt) / kCalls, std::memory_order_relaxed);
+}
+
+std::string Client::report_json(bool bye) {
+  const auto s = tracker_.snapshot(steady_now_ns());
+  const std::string host = hostname();
+  const double check = check_ns();
+  json j = {
+      {"v", 1}, {"kind", "BOT"}, {"client_id", client_id_}, {"seq", ++report_seq_}, {"sent_ts", iso_now_ms()},
+      {"name", cfg_.name.empty() ? "C++ bot on " + host : cfg_.name.substr(0, 80)}, {"sdk", "cpp"},
+      {"pid", static_cast<std::int64_t>(getpid())}, {"host", host}, {"local_state", to_string(s.local_state)},
+      {"published_state", s.published_state ? json(to_string(*s.published_state)) : json(nullptr)},
+      {"in_fault", s.in_fault}, {"fault", s.fault == Fault::None ? json(nullptr) : json(to_string(s.fault))},
+      {"last_seq", s.last_seq >= 0 ? json(s.last_seq) : json(nullptr)},
+      {"heartbeat_age_ms", s.heartbeat_age_ms ? json(*s.heartbeat_age_ms) : json(nullptr)},
+      {"received", s.stats.received}, {"valid", s.stats.valid}, {"recoveries", s.stats.recoveries},
+      {"shadow", cfg_.shadow}, {"would_block", would_block()}, {"check_ns", check > 0 ? json(check) : json(nullptr)},
+      {"bus_latency_ms", s.bus_latency_ms ? json(*s.bus_latency_ms) : json(nullptr)}, {"bye", bye}};
+  return j.dump();
+}
+
 void Client::watchdog_loop() {
+  // Fleet reports live here, on the watchdog thread: never on the order path. Any failure in
+  // them is swallowed so it can never stop the watchdog.
+  std::unique_ptr<zmq::context_t> ctx;
+  std::unique_ptr<zmq::socket_t> push;
+  std::string push_to;
+  auto next_report = steady_clock::now(), next_bench = steady_clock::now();
+  State reported = State::HALT;
+  auto send = [&](bool bye) {
+    const std::string body = report_json(bye);
+    (void)push->send(zmq::buffer(body), zmq::send_flags::dontwait);  // best effort: dropped if nobody listens
+  };
   while (!stop_.load()) {
     dispatch(tracker_.check_watchdog(steady_now_ns()));
+    if (cfg_.report) {
+      try {
+        const std::string target = resolve_telemetry(tracker_.telemetry_endpoint(), cfg_.endpoint);
+        if (target != push_to) {
+          push.reset();
+          push_to = target;
+          if (!target.empty()) {
+            if (!ctx) ctx = std::make_unique<zmq::context_t>(1);
+            push = std::make_unique<zmq::socket_t>(*ctx, zmq::socket_type::push);
+            push->set(zmq::sockopt::linger, 200);
+            push->set(zmq::sockopt::sndhwm, 10);
+            push->connect(target);
+          }
+        }
+        const auto now = steady_clock::now();
+        if (push && now >= next_bench) {
+          measure_check();
+          next_bench = now + seconds{10};
+        }
+        const State cur = current_state();
+        if (push && (now >= next_report || cur != reported)) {
+          send(false);
+          next_report = now + seconds{1};
+          reported = cur;
+        }
+      } catch (const std::exception& e) {
+        std::cerr << "vetosentinel: fleet report failed: " << e.what() << "\n";
+        push.reset();
+        push_to.clear();
+      }
+    }
     std::this_thread::sleep_for(std::chrono::milliseconds{cfg_.watchdog_period_ms});
   }
+  try {
+    if (push) send(true);  // goodbye: the fleet view shows "stopped" instead of "silent"
+  } catch (const std::exception&) {
+  }
+  push.reset();
+  ctx.reset();
 }
 
 }  // namespace vetosentinel

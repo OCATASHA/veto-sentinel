@@ -115,6 +115,19 @@ b = 0.05) the formula predicts ×3.4 for oil news and ÷5.7 for other news; the 
 z-score response was ×3.4 (+1.86 → +6.33) to an oil shock and ÷5.6 (+0.90 → +0.16) to a
 football shock.
 
+### 2c. Trending words (`features/trending.py`, explanation only)
+
+For each word or adjacent word pair, compare its share of headlines in the last hour with the week
+before (the drift windows). With y of the n recent headlines containing it and r of the m reference
+headlines, if nothing had changed then, given its k = y + r mentions, y would be Binomial(k, n/(n+m))
+(the exact conditional test for two Poisson rates). The one-sided p-value I_{n/(n+m)}(y, k − y + 1)
+is shown as a normal z; terms are listed from z 4 (hundreds of terms are tested every hour), with at
+least 3 headlines from 2 different outlets. A word never seen in the week before is judged on its
+actual mentions, which a log-odds score with a prior shrinks too hard for an hour's window. Page-
+title suffixes (" - Site name") are dropped, pairs never span punctuation, and overlapping pairs
+merge ("Silicon Valley Bank"). With a focus, headlines count with their relevance weights. Each
+headline's terms are stored once at ingest as interned tuples; the result is cached per news time.
+
 ## 3. Normalisation and composite
 
 P and D are z-scored against their own history in [t−7 d, t−1 h]. The 1-hour gap stops an
@@ -173,6 +186,11 @@ Evaluated once per tick, in order:
    headlines arrived), so a stalled feed is never counted as calm.
 5. Otherwise `hold`.
 
+`exit_checklist(now)` reports every condition the next relax step needs, from the last input, with
+the same tests as `step` (ready, R below the exit threshold, no change-point alarm or degraded data
+that would hold the level, the calm period, newer news). The dashboard shows it as a checklist; a
+randomised test checks it is never all ticked while `step` holds the level.
+
 The machine starts in HALT. Data time must not go backwards (that raises an error). Config
 validation enforces exit < enter for both levels, caution_enter < halt_enter and
 caution_exit ≤ halt_exit.
@@ -193,6 +211,35 @@ connection behind a lock.
 ## 7. Bus, heartbeat and clients
 
 See [MESSAGE_SCHEMA.md](MESSAGE_SCHEMA.md).
+
+### Fleet view, shadow mode and the speed budget
+
+Every bus message advertises a `telemetry` endpoint (the bus port + 100 by default). Both SDKs report
+their local view there every second from a background thread (see MESSAGE_SCHEMA.md), including the
+cost of their own order check, timed in aggregate, and the publish-to-receive latency. The dashboard
+lists the clients and builds a "where the time goes" chart from measured values only: GDELT's
+15-minute batching (labelled as design, not measurement), the live data lag, the last fetch, AI
+model time per headline (from real model runs, not cache lookups), one decision, bus latency, and
+the Python and C++ order checks. Shadow mode makes a client's gate always allow and count what it
+would have blocked; its action hooks do not fire. The example bot in the dashboard process tries a
+simulated order every 0.25 s through the real `can_submit_order()` to drive the order-gate animation.
+
+### Webhook alerts (`alerts.py`)
+
+A monitor listener queues an event on every level change and operator action; one thread sends it to
+the configured targets (ntfy, Slack, Discord, signed JSON), at most one alert per target per 10 s,
+folding changes in between into the next one. URLs come from environment variables.
+
+### AI assistant (`assistant.py`, optional, advisory)
+
+With `GEMINI_API_KEY` set, the dashboard can ask Google's Gemini for a plain-English summary of the
+current moment, or of any moment on the timeline, and for extra Optimize-for phrases. The model
+gets the level, score, z-scores, change alarm, data problems, focus, trending words and the top
+headlines as JSON data, and must answer in a JSON schema; output is length-capped and headline
+references are checked against what was sent. The system instruction treats headlines as untrusted
+text (anyone can publish one). Nothing it returns reaches the score, the state machine, the stored
+decisions or the bus. Models are tried in order (overloaded or retired ones fall through), answers
+are cached by input, and calls are rate-limited.
 
 ## 8. Process model
 

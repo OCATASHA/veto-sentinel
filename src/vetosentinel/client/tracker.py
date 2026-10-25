@@ -53,6 +53,13 @@ class ClientConfig:
     honor_advertised_timeout: bool = True
     # CAUTION position limit as a fraction of the strategy's normal limit.
     caution_position_fraction: float = 0.25
+    # Shadow mode: the order gate always allows and only counts what it would have blocked; the
+    # action hooks (on_caution, on_halt) are not called. For trying Veto Sentinel out alongside a
+    # live strategy before trusting it. Never the default.
+    shadow: bool = False
+    # Report this client's local state to the monitor's fleet view (endpoint advertised on the bus).
+    report: bool = True
+    name: str = ""
 
     def __post_init__(self) -> None:
         if self.heartbeat_timeout_ms <= 0 or self.max_message_age_ms <= 0:
@@ -97,6 +104,8 @@ class StateTracker:
         self.stats = TrackerStats()
         self.stats.faults[Fault.STARTUP.value] = 1
         self.events: deque[tuple[float, str]] = deque(maxlen=200)
+        self.last_latency_ms: float | None = None  # publish -> receive, last valid message (same-host clocks)
+        self.telemetry_endpoint: str | None = None  # advertised by the monitor
 
     # ------------------------------------------------------------------ hot-path helpers
     def is_stale(self, now_mono: float) -> bool:
@@ -187,6 +196,8 @@ class StateTracker:
             self.stats.valid += 1
             self.last_message = msg
             self.last_valid_mono = now_mono
+            self.last_latency_ms = round(age_ms, 3)
+            self.telemetry_endpoint = msg.telemetry
             if self.cfg.honor_advertised_timeout:
                 self.timeout_s = min(self.cfg.heartbeat_timeout_ms, msg.heartbeat_timeout_ms) / 1000.0
             if gap:
@@ -230,4 +241,5 @@ class StateTracker:
                 "fallback_in_use": m.fallback_in_use if m else None,
                 "stats": {"received": self.stats.received, "valid": self.stats.valid,
                           "recoveries": self.stats.recoveries, "faults": dict(self.stats.faults)},
+                "bus_latency_ms": self.last_latency_ms, "shadow": self.cfg.shadow,
             }

@@ -16,6 +16,7 @@ from __future__ import annotations
 import bisect
 import logging
 import math
+import time
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -29,6 +30,7 @@ from vetosentinel.features.intensity import IntensityTracker
 from vetosentinel.features.normalize import RollingNormalizer
 from vetosentinel.features.panic import PanicAggregator
 from vetosentinel.features.relevance import RelevanceModel, parse_focus
+from vetosentinel.features.trending import terms, trending
 from vetosentinel.models import ComponentReading, Headline, RiskSnapshot
 
 log = logging.getLogger(__name__)
@@ -54,10 +56,13 @@ class FeaturePipeline:
         # Focus ("Optimize for"): retained headlines (time order) so their weights can be redone.
         self.focus: RelevanceModel | None = None
         self._items_t: list[datetime] = []
-        self._items: list[tuple[str, str, np.ndarray | None, float]] = []  # (id, text, vector, count weight)
+        # (id, text, vector, count weight, terms for trending words, source)
+        self._items: list[tuple[str, str, np.ndarray | None, float, tuple[str, ...], str | None]] = []
         self._rel: dict[str, float] = {}  # relevance r of each retained headline (with a focus)
         self._needs_rebuild = False
         self._effect_cache: tuple[Any, dict[str, Any]] | None = None
+        self.weights_version = 0  # bumped whenever headline weights change (focus set or calibrated)
+        self.model_timing: dict[str, Any] = {}  # last batch: AI model time per headline (speed budget)
         if settings.focus.text.strip():
             self.set_focus(settings.focus.text, settings.focus.background_weight)
 
@@ -75,6 +80,7 @@ class FeaturePipeline:
             return {}
         texts = [h.headline for h in headlines]
         probs: list[float] | None = None
+        t0 = time.perf_counter()
         try:
             probs = self.sentiment.negative_probs(texts)
             if len(probs) != len(texts):
@@ -95,6 +101,9 @@ class FeaturePipeline:
             log.error("embedding failed: %s", self.last_model_error)
             embs = None
 
+        dt = time.perf_counter() - t0
+        self.model_timing = {"headlines": len(texts), "ms_per_headline": dt * 1000 / len(texts),
+                             "batch_ms": dt * 1000}
         vecs: list[np.ndarray | None] = [None] * len(headlines) if embs is None else list(embs)
         self._remember(headlines, vecs)
         f = self.focus
@@ -132,7 +141,7 @@ class FeaturePipeline:
             i = bisect.bisect_right(self._items_t, h.event_time)
             self._items_t.insert(i, h.event_time)
             self._items.insert(i, (h.headline_id, h.headline, None if v is None else np.asarray(v, dtype=np.float16),
-                                   h.count_weight))
+                                   h.count_weight, terms(h.headline)[0], h.source))
         f = self.focus
         if f is not None and not f.calibrated and f.calibrate(self._vectors()):
             self._apply_focus()  # first calibration: weights change for everything seen so far
@@ -140,7 +149,7 @@ class FeaturePipeline:
 
     def _vectors(self) -> np.ndarray:
         """Vectors of retained headlines, oldest first (for calibration)."""
-        vs = [v for _, _, v, _ in self._items if v is not None]
+        vs = [x[2] for x in self._items if x[2] is not None]
         return np.stack(vs).astype(np.float32) if vs else np.zeros((0, self.embedder.dim), dtype=np.float32)
 
     def _model(self, text: str, background: float | None) -> RelevanceModel | None:
@@ -163,6 +172,7 @@ class FeaturePipeline:
         self.drift.reweight(self.weight)
         self.intensity.reweight(self.weight)
         self._effect_cache = None
+        self.weights_version += 1
 
     def set_focus(self, text: str, background: float | None = None,
                   rebuild_until: datetime | None = None) -> dict[str, Any]:
@@ -244,6 +254,31 @@ class FeaturePipeline:
             eff = f.effect(r, np.asarray([x[3] for x in recent]), hours) if f.calibrated else None
             self._effect_cache = (key, eff or {})
         return {**f.info(), "effect": self._effect_cache[1] or None}
+
+    def model_cost(self) -> dict[str, Any]:
+        """AI model time per headline: from real model runs (cache misses) when there were any, else
+        the last batch (which may be mostly cache lookups, and says so)."""
+        runs = [b for b in (self.sentiment, self.embedder) if getattr(b, "scored", 0)]
+        if runs:
+            n = max(b.scored for b in runs)  # type: ignore[attr-defined]
+            ms = sum(b.score_s / b.scored for b in runs) * 1000  # type: ignore[attr-defined]
+            return {"ms_per_headline": ms, "headlines": n, "source": "model"}
+        if self.model_timing:
+            return {**self.model_timing, "source": "batch"}
+        return {}
+
+    def trending_words(self, t: datetime | None = None, top: int = 8) -> list[dict[str, Any]]:
+        """Words unusually common in the last hour vs the week before (trending.py), each headline
+        weighted as in the score. An explanation for people; the score never uses it."""
+        if not self._items_t:
+            return []
+        end = t or self._items_t[-1]
+        recent_from = end - timedelta(minutes=self.s.drift.recent_window_minutes)
+        i0, i1, i2 = (bisect.bisect_right(self._items_t, x) for x in (
+            end - timedelta(days=self.s.drift.reference_window_days), recent_from, end))
+        recent = [(x[4], terms(x[1])[1], self.weight(x[0]), x[5]) for x in self._items[i1:i2]]
+        reference = [(x[4], self.weight(x[0])) for x in self._items[i0:i1]]
+        return trending(recent, reference, top=top)
 
     def compute(self, t: datetime) -> RiskSnapshot:
         if self._needs_rebuild:

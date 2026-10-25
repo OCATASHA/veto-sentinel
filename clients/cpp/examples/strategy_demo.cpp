@@ -1,10 +1,14 @@
 // Example strategy loop using the Veto Sentinel C++ client. Simulated only: no broker, no orders.
 //
-//   strategy_demo [endpoint] [duration_seconds]
+//   strategy_demo [endpoint] [duration_seconds]      (0 or no duration = until SIGINT/SIGTERM)
 //
 // Prints the local state once per second and a final JSON summary line (used by the
-// Python<->C++ interop test).
+// Python<->C++ interop test). VETOSENTINEL_BOT_NAME names it in the dashboard's fleet view;
+// VETOSENTINEL_SHADOW=1 runs it in shadow mode. SIGINT/SIGTERM stop it cleanly (it says goodbye
+// to the fleet view); SIGKILL makes it go silent, like a crash.
+#include <atomic>
 #include <chrono>
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -14,9 +18,18 @@
 
 using namespace vetosentinel;
 
+namespace {
+std::atomic<bool> g_stop{false};
+extern "C" void on_signal(int) { g_stop.store(true); }
+}  // namespace
+
 int main(int argc, char** argv) {
+  std::signal(SIGINT, on_signal);
+  std::signal(SIGTERM, on_signal);
   ClientConfig cfg;
   if (argc > 1) cfg.endpoint = argv[1];
+  if (const char* name = std::getenv("VETOSENTINEL_BOT_NAME")) cfg.name = name;
+  if (const char* sh = std::getenv("VETOSENTINEL_SHADOW")) cfg.shadow = std::string(sh) == "1";
   const double duration = argc > 2 ? std::atof(argv[2]) : 0.0;
 
   Hooks hooks;
@@ -41,7 +54,7 @@ int main(int argc, char** argv) {
 
   const auto t_end = std::chrono::steady_clock::now() + std::chrono::duration<double>(duration);
   std::int64_t worst_ns = 0, total_ns = 0, n = 0;
-  while (duration <= 0 || std::chrono::steady_clock::now() < t_end) {
+  while (!g_stop.load() && (duration <= 0 || std::chrono::steady_clock::now() < t_end)) {
     // Hot path: measure the cost of the local order gate.
     for (int i = 0; i < 100000; ++i) {
       const auto a = steady_now_ns();
@@ -57,7 +70,7 @@ int main(int argc, char** argv) {
                 client.can_submit_order(true), client.can_submit_order(false), client.position_limit(100.0),
                 to_string(s.fault), static_cast<long long>(s.last_seq));
     std::fflush(stdout);
-    std::this_thread::sleep_for(std::chrono::seconds{1});
+    for (int i = 0; i < 10 && !g_stop.load(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds{100});
   }
   client.stop();
   const auto s = client.snapshot();

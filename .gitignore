@@ -9,6 +9,7 @@ data/*
 !data/historical/
 data/historical/*
 !data/historical/gdelt_gkg_svb_2023.jsonl
+!data/historical/*.markers.json
 clients/cpp/build/
 *.duckdb
 *.duckdb.wal
@@ -17,3 +18,7 @@ clients/cpp/build/
 
 # personal notes, kept local
 ideas.txt
+
+# local secrets such as GEMINI_API_KEY (loaded by the run scripts); never commit
+.env
+clients/cpp/build-*/

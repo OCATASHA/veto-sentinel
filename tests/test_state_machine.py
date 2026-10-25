@@ -243,3 +243,73 @@ def test_live_cooldown_runs_on_the_clock_and_needs_newer_news():
     d = step3(news + timedelta(minutes=31), now + timedelta(minutes=31), 100)
     assert d.new_state is RiskState.HALT and "waiting for newer news" in d.reason
     assert step3(news + timedelta(minutes=32), now + timedelta(minutes=32), 103).new_state is RiskState.CAUTION
+
+
+def checklist(sm, at):
+    rx = sm.exit_checklist(at)
+    return None if rx is None else (rx["next_state"], {it["key"]: it for it in rx["items"]})
+
+
+def test_exit_checklist_lists_what_relaxing_still_needs():
+    drv = Driver(StateMachine(cfg()))
+    drv.step(3.0)  # startup HALT, score still above halt_exit
+    nxt, items = checklist(drv.sm, drv.t)
+    assert nxt == "CAUTION" and items["ready"]["ok"] and not items["score"]["ok"]
+    assert items["score"]["value"] == 3.0 and items["score"]["limit"] == 2.5
+    assert not items["calm"]["started"] and not items["calm"]["ok"] and not items["news"]["ok"]
+    drv.step(2.2)  # below halt_exit: the calm period starts
+    _, items = checklist(drv.sm, drv.t)
+    assert items["score"]["ok"] and items["calm"]["started"] and not items["calm"]["ok"]
+    drv.step(2.2)  # news time moved on: newer news has been assessed
+    _, items = checklist(drv.sm, drv.t)
+    assert items["news"]["ok"] and not items["calm"]["ok"]
+
+
+def test_exit_checklist_change_point_and_degraded_data_follow_the_rules():
+    drv = Driver(StateMachine(cfg()))
+    drv.step(1.5, cp_active=True)  # HALT: an alarm with R < caution_enter only means CAUTION
+    _, items = checklist(drv.sm, drv.t)
+    assert items["changepoint"]["active"] and items["changepoint"]["ok"]
+    drv.step(2.2, cp_active=True)  # ...but with R >= caution_enter it means HALT: it holds the level
+    _, items = checklist(drv.sm, drv.t)
+    assert not items["changepoint"]["ok"]
+    drv.step(0.5, degraded=True)  # degraded data floors at CAUTION: HALT may still relax to it
+    _, items = checklist(drv.sm, drv.t)
+    assert items["data"]["ok"]
+    drv2 = Driver(StateMachine(cfg()))
+    ready_normal(drv2)
+    drv2.step(2.2)  # -> CAUTION
+    drv2.step(0.5, degraded=True)
+    nxt, items = checklist(drv2.sm, drv2.t)
+    assert nxt == "NORMAL" and not items["data"]["ok"] and items["data"]["reasons"] == ["drift unavailable"]
+    drv2.step(0.5, ready=False)
+    _, items = checklist(drv2.sm, drv2.t)
+    assert not items["ready"]["ok"] and items["ready"]["reasons"] == ["warm-up"]
+
+
+def test_exit_checklist_is_empty_in_normal_and_operator_only_in_flatten():
+    drv = Driver(StateMachine(cfg()))
+    assert drv.sm.exit_checklist(drv.t) is None  # no input yet
+    ready_normal(drv)
+    assert drv.sm.exit_checklist(drv.t) is None
+    drv.sm.force_flatten(drv.t, "op", "test")
+    nxt, items = checklist(drv.sm, drv.t)
+    assert nxt == "HALT" and list(items) == ["operator"] and not items["operator"]["ok"]
+
+
+def test_exit_checklist_is_never_all_ticked_while_the_level_holds():
+    """If every condition held, the step would have relaxed: the checklist must agree with step()."""
+    import random
+
+    rnd = random.Random(7)
+    drv = Driver(StateMachine(cfg()))
+    relaxed = 0
+    for _ in range(3000):
+        before = drv.sm.state
+        d = drv.step(rnd.choice([0.0, 0.5, 1.2, 2.2, 2.7, 4.0, None]), ready=rnd.random() > 0.03,
+                     degraded=rnd.random() < 0.05, cp_active=rnd.random() < 0.04)
+        relaxed += d.rule == "deescalate_after_cooldown"
+        rx = drv.sm.exit_checklist(drv.t - STEP)
+        if rx is not None and drv.sm.state is not RiskState.FLATTEN:
+            assert not all(it["ok"] for it in rx["items"]), (before, d.rule, rx)
+    assert relaxed > 20  # the run did exercise relaxing

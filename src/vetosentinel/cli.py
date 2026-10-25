@@ -110,6 +110,12 @@ def cmd_live(args: argparse.Namespace) -> None:
     _serve(rt, s, args.no_dashboard)
 
 
+def cmd_preflight(args: argparse.Namespace) -> None:
+    from vetosentinel.preflight import run
+
+    sys.exit(run(args.config, online=not args.offline, send_test_alert=args.send_test_alert))
+
+
 def cmd_evaluate(args: argparse.Namespace) -> None:
     from vetosentinel.evaluation.report import evaluate, to_markdown
 
@@ -244,6 +250,12 @@ def main(argv: list[str] | None = None) -> None:
     p = sub.add_parser("probe-adapters", help="one-shot fetch from each configured live adapter")
     common(p)
     p.set_defaults(fn=cmd_probe)
+
+    p = sub.add_parser("preflight", help="check everything a demo needs (models, data, ports, network, keys)")
+    p.add_argument("--config", help="TOML config file (default: config/default.toml)")
+    p.add_argument("--offline", action="store_true", help="skip the network checks (GDELT, Gemini key)")
+    p.add_argument("--send-test-alert", action="store_true", help="also send a test message to each alert target")
+    p.set_defaults(fn=cmd_preflight)
 
     p = sub.add_parser("fetch-gdelt-gkg", help="build a historical fixture from GDELT GKG raw files")
     p.add_argument("--start", required=True)

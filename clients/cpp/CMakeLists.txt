@@ -23,6 +23,16 @@ endforeach()
 
 find_package(Threads REQUIRED)
 
+# Sanitizer builds (see sanitize.sh): -DVS_SANITIZE=thread or -DVS_SANITIZE=address (ASan + UBSan)
+set(VS_SANITIZE "" CACHE STRING "thread | address | empty")
+if(VS_SANITIZE STREQUAL "thread")
+  add_compile_options(-fsanitize=thread -fno-omit-frame-pointer -g)
+  add_link_options(-fsanitize=thread)
+elseif(VS_SANITIZE STREQUAL "address")
+  add_compile_options(-fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer -g)
+  add_link_options(-fsanitize=address,undefined)
+endif()
+
 add_library(vetosentinel_client src/client.cpp)
 target_include_directories(vetosentinel_client
   PUBLIC include
@@ -38,3 +48,9 @@ add_executable(test_tracker tests/test_tracker.cpp)
 target_link_libraries(test_tracker PRIVATE vetosentinel_client)
 target_compile_options(test_tracker PRIVATE -Wall -Wextra)
 add_test(NAME tracker COMMAND test_tracker)
+
+add_executable(test_client_threads tests/test_client_threads.cpp)
+target_include_directories(test_client_threads PRIVATE ${CPPZMQ_INCLUDE_DIR} ${NLOHMANN_INCLUDE_DIR})
+target_link_libraries(test_client_threads PRIVATE vetosentinel_client)
+target_compile_options(test_client_threads PRIVATE -Wall -Wextra)
+add_test(NAME client_threads COMMAND test_client_threads)

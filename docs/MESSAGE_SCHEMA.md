@@ -29,6 +29,7 @@ Every message (`STATE`, `HEARTBEAT`, `CONTROL`) carries a **complete snapshot**:
 | `fallback_in_use` | bool | true if any component uses a fallback heuristic |
 | `control` | object or null | last operator event, with `"automatic_execution": false` |
 | `focus` | string or null | what the risk score is optimized for (comma-separated phrases); null = whole market |
+| `telemetry` | string or null | where clients may send fleet reports (bind address; a `*` or loopback host means "the host you subscribed to"); null = no fleet view |
 
 Unknown extra fields are ignored, which keeps the format forward compatible. A missing or
 mistyped required field invalidates the message. Strict types are enforced: `"seq": "7"`
@@ -76,6 +77,27 @@ repairs a missed update, and any silence, gap or reordering forces HALT until fr
 in-sequence snapshots arrive. Wall-clock freshness checks assume publisher and client clocks
 are NTP-synchronised to well within `max_message_age_ms`. Messages are not authenticated (no
 CURVE). Anyone who can reach the port can publish, which matters for anything beyond a local demo.
+
+## Fleet reports (reverse channel, display only)
+
+Clients send one JSON object per ZeroMQ message over PUSH to the advertised `telemetry` endpoint:
+every second, on every local state change, and once with `"bye": true` when they stop. It is sent
+from a background thread, never from the order path, and dropped if nobody is listening.
+
+| field | meaning |
+|---|---|
+| `v`, `kind` | `1`, `"BOT"` |
+| `client_id`, `name`, `sdk`, `pid`, `host` | who is reporting (`sdk`: `python` or `cpp`) |
+| `local_state`, `published_state`, `in_fault`, `fault`, `last_seq` | the client's own view |
+| `heartbeat_age_ms`, `received`, `valid`, `recoveries` | its watchdog and counters |
+| `shadow`, `would_block` | shadow mode, and orders it would have blocked |
+| `check_ns` | measured cost of one order check (timed by the client itself) |
+| `bus_latency_ms` | publish-to-receive time of the last valid message |
+| `bye` | the client stopped cleanly |
+
+The monitor validates each report (at most 4 KiB, typed fields, 50 clients) and shows the latest per
+client: silent after the heartbeat timeout, forgotten after two minutes. Reports are
+unauthenticated, like the bus, and never influence the risk state or any bot.
 
 ## Demo fault injection
 

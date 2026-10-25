@@ -134,6 +134,11 @@
     oil: '<path d="M12 3.5s6 6.6 6 10.6a6 6 0 0 1-12 0c0-4 6-10.6 6-10.6z"/>',
     coin: '<circle cx="12" cy="12" r="8.5"/><path d="M14.5 9.2c-.6-.8-1.5-1.2-2.5-1.2-1.6 0-2.7.9-2.7 2s1 1.7 2.7 2 2.7.9 2.7 2-1.1 2-2.7 2c-1 0-1.9-.4-2.5-1.2M12 6.5V8M12 16v1.5"/>',
     globe: '<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.4 2.4 3.5 5.2 3.5 8.5s-1.1 6.1-3.5 8.5c-2.4-2.4-3.5-5.2-3.5-8.5s1.1-6.1 3.5-8.5z"/>',
+    volume: '<path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/>',
+    mute: '<path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M16 9.5l5 5M21 9.5l-5 5"/>',
+    sparkle: '<path d="M12 3.5l1.9 5 5.1 1.9-5.1 1.9-1.9 5-1.9-5-5.1-1.9 5.1-1.9z"/><path d="M18.5 15.5l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z"/>',
+    pin: '<path d="M12 21s-6-5.6-6-10.5a6 6 0 0 1 12 0C18 15.4 12 21 12 21z"/><circle cx="12" cy="10.5" r="2.2"/>',
+    bell: '<path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 1.5h-15z"/><path d="M10 20.5a2 2 0 0 0 4 0"/>',
     heart: '<path d="M12 20s-7.5-4.6-7.5-10.2A4.2 4.2 0 0 1 12 7.3a4.2 4.2 0 0 1 7.5 2.5C19.5 15.4 12 20 12 20z"/>',
   };
   const icon = (name, cls = "") => `<svg class="ico ${cls}" viewBox="0 0 24 24" aria-hidden="true">${P[name] || ""}</svg>`;
@@ -176,6 +181,7 @@
     risk: "The risk score combines the three warning signals into one number. 0 means a typical day. Above 2 Veto Sentinel says “be careful”; above 3.5 it says “stop”. It only relaxes after things have stayed calm for a while, so it doesn't flip-flop.",
     bots: "Trading bots connected to Veto Sentinel check this before every order. Veto Sentinel never places or cancels trades itself — it only tells bots how careful to be.",
     weights: "Each signal is first compared with its own normal range (that's the number on each card). Then they're blended: 40% negativity, 30% topic change and 30% news volume. Readings at or below normal count as zero, so a calm signal can't hide a stressed one.",
+    trending: "For each word or phrase the question is: if it were as common as in the week before, how surprising would this many mentions in the last hour be? (An exact test comparing two rates, shown as a z-score; listed from z 4, odds of about 1 in 30,000.) It must appear in at least 3 headlines from 2 different outlets. It explains the news; it doesn't change the score.",
     headlines: "These are the headlines from the last hour that the AI scored as most negative. Copies of the same story from different outlets are counted once.",
     flatten: "FLATTEN is the only level a human sets. It's for situations where people decide positions should be closed. Veto Sentinel records who asked and why and broadcasts it. Closing positions is always done by a person, never automatically.",
   };
@@ -232,6 +238,8 @@
     ["Sudden-change detector", "A statistical alarm (CUSUM) that fires when the risk score stays raised for a while, even if it never jumps past a threshold."],
     ["Simulated time", "In a replay, days of news are played back in minutes. Times shown are the replay's clock, not today's."],
     ["Demo data", "The default replay uses invented news about fictional banks and countries, so you can watch the system react safely."],
+    ["AI summary", "An optional plain-English summary written by Google's Gemini from the same numbers and headlines you see. It is advisory only: the level always comes from the statistics, never from the AI, and the AI can be wrong."],
+    ["Event pins", "Markers on the timeline for public events (for example when SVB was closed), taken from news coverage. Times are approximate; they are there for context and the monitor never uses them."],
     ["Optimize for", "Tells Veto Sentinel what you trade (for example “OPEC, crude oil”). Each headline gets a relevance score from its AI vector; matching news counts fully, other news a little. Every “normal” is recomputed with the same weights, so the risk score still compares like with like."],
   ];
 
@@ -240,7 +248,8 @@
     status: null, runId: null, history: [], transitions: [], transKey: "", prevState: null, heroState: null,
     tab: "overview", range: 0, series: { panic_z: false, drift_z: false, volume_z: false }, table: false,
     offline: false, user: null, lastValid: null, lastStateToast: 0, pipeStep: 0, codeExpires: null,
-    eventsKey: "", markersKey: "", headKey: "", whyKey: "", faultCounts: {}, tilesKey: "",
+    eventsKey: "", markersKey: "", headKey: "", whyKey: "", faultCounts: {}, tilesKey: "", relaxKey: "",
+    moment: null, momentSeq: 0, compare: null, compareFor: "",
   };
 
   // ================================================================ API
@@ -508,12 +517,43 @@
     $("#calmBar").style.width = `${clamp(1 - Math.max(0, left) / calmClock.total, 0, 1) * 100}%`;
   }
   window.setInterval(tickCalm, 250);
+
+  // "What has to happen before it relaxes": the state machine's own exit conditions (s.relax).
+  const RELAX = {
+    operator: () => ["An operator cancels the emergency instruction", "Controls tab"],
+    ready: (it) => [it.ok ? "Veto Sentinel can see clearly" : "Veto Sentinel can see clearly again",
+      it.ok ? "" : plainNotReady(it.reasons[0] || "")],
+    score: (it) => [`Risk score below ${it.limit}`, it.value == null ? "" : `now ${fmt(it.value, 2)}`],
+    changepoint: (it) => it.ok ? ["No sudden-change alarm holding the level", ""]
+      : ["The sudden-change alarm clears", "about an hour after it fired"],
+    data: (it) => it.ok ? ["No missing news data", ""] : ["The missing news data is back", plainDegraded(it.reasons[0] || "")],
+    calm: (it) => [`${it.minutes} calm minutes in a row`, it.ok ? "done" : it.started ? "counting down" : "starts once the above are ticked"],
+    news: (it) => ["Newer news checked since the calm minutes began", it.ok || !it.started ? "" : "waiting for the next batch"],
+  };
+  function renderRelax(s) {
+    const ul = $("#relaxList"), head = $("#relaxHead"), rx = s.relax;
+    ul.hidden = head.hidden = !rx;
+    if (!rx) { S.relaxKey = ""; return; }
+    const key = JSON.stringify(rx);
+    if (key === S.relaxKey) return;
+    S.relaxKey = key;
+    setText(head, `To go to “${level(rx.next_state).title}”, all of these must be true:`);
+    ul.replaceChildren(...rx.items.map((it) => {
+      const [label, note] = (RELAX[it.key] || (() => [it.key, ""]))(it);
+      const st = it.ok ? "ok" : it.key === "calm" && it.started ? "wait" : "no";
+      return h("li", { dataset: { st } },
+        h("span", { class: "ri", html: icon(st === "ok" ? "check" : st === "wait" ? "clock" : "x") }),
+        h("span", { text: label }), note ? h("span", { class: "rn", text: note }) : null);
+    }));
+  }
+
   function renderCalm(s) {
     const box = $("#calm"), cd = s.cooldown, th = s.thresholds;
     const waitingFor = s.state === "HALT" || s.state === "CAUTION";
-    if (!cd && !(waitingFor && s.monitor_ready)) { box.hidden = true; return; }
+    if (!cd && !s.relax && !(waitingFor && s.monitor_ready)) { box.hidden = true; return; }
     box.hidden = false;
     box.classList.toggle("waiting", !cd);
+    renderRelax(s);
     if (cd) {
       const r = s.replay;
       // The server owns the countdown (remaining_now_s); the browser only ticks between polls and
@@ -538,10 +578,19 @@
       return;
     }
     calmClock = null;
+    setText($("#calmTime"), "");
+    if (s.state === "FLATTEN") {
+      setText($("#calmTitle"), "Emergency instruction in force");
+      setText($("#calmNote"), "Automatic rules never lift it. Once an operator cancels it, Veto Sentinel resumes at “Stop” and relaxes step by step.");
+      return;
+    }
+    setText($("#calmTitle"), "Calm countdown not started yet");
+    if (s.relax) {
+      setText($("#calmNote"), `The ${th.cooldown_minutes} calm minutes start once everything above them is ticked. If the news flares up again, they start over.`);
+      return;
+    }
     const exit = s.state === "HALT" ? th.halt_exit : th.caution_exit;
     const cp = s.decision && s.decision.changepoint && s.decision.changepoint.alarm_active;
-    setText($("#calmTitle"), "Calm countdown not started yet");
-    setText($("#calmTime"), "");
     let why = `It starts once the risk score falls below ${exit}`
       + (s.risk_score == null ? "." : ` (now ${fmt(s.risk_score, 2)}).`);
     if (s.state === "CAUTION" && s.degraded) why = "It starts once the missing information is back.";
@@ -690,6 +739,8 @@
       this.xmin = 0;
       this.xmax = 1;
       this.view = null; // zoomed window {from, to, follow}, or null for the full range
+      this.pickT = null; // the reading opened with a click (onPick)
+      this.pins = []; // event pins drawn last time, for hover
       if (this.o.hover) {
         canvas.addEventListener("pointermove", (e) => (this.drag ? this.onDrag(e) : this.onMove(e)));
         canvas.addEventListener("pointerleave", () => { if (!this.drag) this.onLeave(); });
@@ -702,7 +753,11 @@
           this.drag = { x: e.clientX, from: this.xmin, to: this.xmax, moved: false };
           canvas.setPointerCapture(e.pointerId);
         });
-        canvas.addEventListener("pointerup", () => { this.drag = null; });
+        canvas.addEventListener("pointerup", (e) => {
+          const d = this.drag;
+          this.drag = null;
+          if (d && !d.moved && this.o.onPick && this.rows.length && this.geom) this.pick(this.nearest(this.timeAt(e.clientX)));
+        });
         canvas.addEventListener("dblclick", () => this.resetZoom());
         canvas.addEventListener("keydown", (e) => this.onKey(e));
       }
@@ -757,9 +812,22 @@
       $("#chartTip").hidden = true;
       this.draw();
     }
+    nearest(t) {
+      let lo = 0, hi = this.ts.length - 1;
+      while (lo < hi) { const mid = (lo + hi) >> 1; if (this.ts[mid] < t) lo = mid + 1; else hi = mid; }
+      if (lo > 0 && Math.abs(this.ts[lo - 1] - t) < Math.abs(this.ts[lo] - t)) lo -= 1;
+      return lo;
+    }
+    pick(i) {
+      if (!this.rows[i]) return;
+      this.pickT = this.ts[i];
+      this.draw();
+      this.o.onPick(this.rows[i]);
+    }
     onKey(e) {
       if (!this.rows.length) return;
       if (e.key === "Escape") { this.onLeave(); return; }
+      if (e.key === "Enter" && this.o.onPick && this.hoverIdx != null) { e.preventDefault(); this.pick(this.hoverIdx); return; }
       const step = { ArrowLeft: -1, ArrowRight: 1 }[e.key];
       if (!(e.key === "Home" || e.key === "End" || step)) return;
       e.preventDefault();
@@ -828,6 +896,15 @@
       const bandA = parseFloat(css("--band-alpha")) || 0.15;
       ctx.lineJoin = "round";
       ctx.lineCap = "round";
+      const plate = (text, x, y, color) => { // a label on a backing plate, readable over the lines
+        const tw = ctx.measureText(text).width;
+        ctx.fillStyle = withAlpha(surface, 0.86);
+        ctx.beginPath();
+        ctx.roundRect(x - 4, y - 11, tw + 8, 15, 4);
+        ctx.fill();
+        ctx.fillStyle = color;
+        ctx.fillText(text, x, y);
+      };
 
       // level bands
       if (this.o.bands) {
@@ -858,6 +935,34 @@
           const label = scenarioCopy(sc).title + (S.status.synthetic ? " (invented)" : "");
           const tw = ctx.measureText(label).width;
           if (this.o.axes && tw + 10 < x1 - x0) ctx.fillText(label, clamp(xa + 5, x0 + 4, x1 - tw - 4), y0 + 12);
+        }
+      }
+      // event pins: public events from the fixture's sidecar (context only; the monitor never uses them)
+      this.pins = [];
+      const pins = this.o.markers === false || !S.status ? [] : (S.status.replay.markers || []);
+      if (pins.length) {
+        const pinInk = css("--ink-2"), top = y0 + (this.o.axes ? 20 : 3), ends = [-1e9, -1e9, -1e9];
+        ctx.font = `600 10.5px ${css("--font")}`;
+        ctx.textAlign = "left";
+        for (const m of pins) {
+          const t = Date.parse(m.t);
+          if (t < this.xmin || t > this.xmax) continue;
+          const x = Math.round(X(t)) + 0.5;
+          this.pins.push({ x, m });
+          ctx.save();
+          ctx.setLineDash([2, 3]);
+          ctx.strokeStyle = withAlpha(pinInk, 0.55);
+          ctx.lineWidth = 1;
+          ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, y1); ctx.stroke();
+          ctx.restore();
+          ctx.fillStyle = pinInk;
+          ctx.beginPath(); ctx.arc(x, top, 3, 0, Math.PI * 2); ctx.fill();
+          if (!this.o.axes) continue;
+          const tw = ctx.measureText(m.label).width, lx = Math.min(x + 6, x1 - tw - 2);
+          const row = ends.findIndex((end) => lx > end + 8);
+          if (row < 0) continue; // crowded: the pin stays, its name shows on hover
+          plate(m.label, lx, top + 4 + row * 15, axisInk);
+          ends[row] = lx + tw;
         }
       }
       // grid + axes
@@ -934,6 +1039,26 @@
         }
       }
       ctx.restore();
+      // extra marks (e.g. first evidence times) and the reading opened with a click
+      const marks = [...(this.o.marks || [])];
+      if (this.pickT != null) marks.push({ t: this.pickT, color: "--accent", solid: true });
+      for (const mk of marks) {
+        const t = typeof mk.t === "number" ? mk.t : Date.parse(mk.t);
+        if (!(t >= this.xmin && t <= this.xmax)) continue;
+        const x = Math.round(X(t)) + 0.5, color = mk.color.startsWith("--") ? css(mk.color) : mk.color;
+        ctx.save();
+        if (!mk.solid) ctx.setLineDash([6, 4]);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = mk.solid ? 2 : 1.6;
+        ctx.beginPath(); ctx.moveTo(x, y0); ctx.lineTo(x, y1); ctx.stroke();
+        ctx.restore();
+        if (mk.label && this.o.axes) {
+          ctx.font = `700 11px ${css("--font")}`;
+          ctx.textAlign = "left";
+          const tw = ctx.measureText(mk.label).width;
+          plate(mk.label, x + 8 + tw > x1 ? x - 8 - tw : x + 8, y1 - 8 - (mk.row || 0) * 18, color);
+        }
+      }
       // end dot (sparklines)
       if (this.o.endDot && this.progress >= 1) {
         for (let i = this.rows.length - 1; i >= 0; i--) {
@@ -967,13 +1092,11 @@
     }
     onMove(e) {
       if (!this.rows.length || !this.geom) return;
-      const t = this.timeAt(e.clientX);
-      let lo = 0, hi = this.ts.length - 1;
-      while (lo < hi) { const mid = (lo + hi) >> 1; if (this.ts[mid] < t) lo = mid + 1; else hi = mid; }
-      if (lo > 0 && Math.abs(this.ts[lo - 1] - t) < Math.abs(this.ts[lo] - t)) lo -= 1;
+      const lo = this.nearest(this.timeAt(e.clientX));
       this.hoverIdx = lo;
       this.draw();
-      showTip(e, this.rows[lo], this.series);
+      const px = e.clientX - this.canvas.getBoundingClientRect().left;
+      showTip(e, this.rows[lo], this.series, this.pins.filter((p) => Math.abs(p.x - px) <= 7).map((p) => p.m));
     }
     onLeave() {
       this.hoverIdx = null;
@@ -984,25 +1107,28 @@
 
   function hideTips() {
     $("#chartTip").hidden = true;
-    for (const c of [miniChart, bigChart, ...Object.values(sparks)]) {
+    for (const c of [miniChart, bigChart, compareChart, ...Object.values(sparks)]) {
       if (c.hoverIdx != null) { c.hoverIdx = null; c.draw(); }
     }
   }
 
   const SERIES_NAMES = { risk_score: "Risk score", panic_z: "Negativity", drift_z: "Topic change", volume_z: "News volume" };
-  function showTip(e, r, series) {
+  function showTip(e, r, series, pins = []) {
     const tip = $("#chartTip");
-    const L = level(r.state);
-    const rows = [
-      h("div", { class: "tt-time", text: `${fmtFull(r.as_of)}${S.status && S.status.mode === "replay" ? " · simulated" : ""}` }),
-      h("div", { class: "tt-row" }, h("span", { class: "k", style: { background: `var(--${L.tone})`, height: "10px", width: "10px", "border-radius": "3px" } }),
-        h("b", { text: L.title }), h("span", { text: r.monitor_ready ? (r.degraded ? "level · missing data" : "level") : "level · not ready" })),
-    ];
+    const rows = [h("div", { class: "tt-time", text: `${fmtFull(r.as_of)}${S.status && S.status.mode === "replay" ? " · simulated" : ""}` })];
+    if (r.state) {
+      const L = level(r.state);
+      rows.push(h("div", { class: "tt-row" }, h("span", { class: "k", style: { background: `var(--${L.tone})`, height: "10px", width: "10px", "border-radius": "3px" } }),
+        h("b", { text: L.title }), h("span", { text: r.monitor_ready ? (r.degraded ? "level · missing data" : "level") : "level · not ready" })));
+    }
     for (const sr of series) {
       rows.push(h("div", { class: "tt-row" }, h("span", { class: "k", style: { background: sr.color.startsWith("--") ? `var(${sr.color})` : sr.color } }),
-        h("b", { text: fmt(r[sr.key], 2) }), h("span", { text: SERIES_NAMES[sr.key] || sr.key })));
+        h("b", { text: fmt(r[sr.key], 2) }), h("span", { text: sr.name || SERIES_NAMES[sr.key] || sr.key })));
     }
     if (r.cusum_alarm_active) rows.push(h("div", { class: "tt-row" }, h("span", { html: icon("bolt") }), h("span", { text: "sudden-change alarm" })));
+    for (const m of pins) {
+      rows.push(h("div", { class: "tt-row tt-pin" }, h("span", { html: icon("pin") }), h("span", { text: `${m.label} (approx.): ${m.note}` })));
+    }
     tip.replaceChildren(...rows);
     tip.hidden = false;
     const tw = tip.offsetWidth, th = tip.offsetHeight;
@@ -1014,7 +1140,8 @@
   }
 
   const miniChart = new TimeChart($("#miniChart"), { area: true });
-  const bigChart = new TimeChart($("#bigChart"), { zoom: true, onView: (z) => { const b = $("#zoomReset"); if (b) b.hidden = !z; } });
+  const bigChart = new TimeChart($("#bigChart"), { zoom: true, onPick: openMoment, onView: (z) => { const b = $("#zoomReset"); if (b) b.hidden = !z; } });
+  const compareChart = new TimeChart($("#compareChart"), { bands: false });
   const sparks = {};
 
   function lastHours(hours) {
@@ -1046,6 +1173,7 @@
       if (tabChanged || !chartsAnimated.timeline) { if (rows.length) chartsAnimated.timeline = true; bigChart.animateIn(); } else bigChart.draw();
       renderBigLegend(series);
       if (S.table) renderTable(rows);
+      if (tabChanged) renderCompare(true);
     } else if (tab === "signals") {
       const rows = lastHours(24);
       const end = rows.length ? Date.parse(rows[rows.length - 1].as_of) : null;
@@ -1072,13 +1200,15 @@
       h("span", { class: "lk" }, h("span", { class: "dash" }), "Thresholds"));
   }
   function renderBigLegend(series) {
-    const key = series.map((s) => s.key).join(",");
+    const key = series.map((s) => s.key).join(",") + "|" + ((S.status && S.status.replay.markers) || []).length;
     const box = $("#bigLegend");
     if (box.dataset.key === key) return;
     box.dataset.key = key;
     box.replaceChildren(...series.map((sr) => h("span", { class: "lk" },
       h("span", { class: "line", style: { background: `var(${sr.color})` } }), SERIES_NAMES[sr.key])),
-    ...legendBands(), h("span", { class: "lk" }, h("span", { class: "dash" }), "Be careful / Stop thresholds"));
+    ...legendBands(), h("span", { class: "lk" }, h("span", { class: "dash" }), "Be careful / Stop thresholds"),
+    ...(S.status && (S.status.replay.markers || []).length
+      ? [h("span", { class: "lk" }, h("span", { class: "pin-key", html: icon("pin") }), "Public events (approx. times)")] : []));
   }
   // Every reading in the selected range, newest first. Rows are plain numbers and our own labels,
   // so they are built as one HTML string; new readings are prepended instead of rebuilding.
@@ -1234,6 +1364,24 @@
     }));
   }
 
+  // Trending words: chips sized by how unusual they are (z), with counts in the tooltip.
+  function trendChips(list) {
+    return list.map((w) => {
+      const big = w.z >= 6 ? "hi" : w.z >= 4.5 ? "mid" : "lo";
+      const usual = w.usual_share > 0 ? `usually ${pct(w.usual_share, w.usual_share < 0.01 ? 2 : 1)} of headlines` : "not seen in the week before";
+      return h("span", { class: "tw", dataset: { lvl: big }, title: `In ${w.count} headlines from ${w.sources} outlets in the last hour (${pct(w.share, 1)}), ${usual} · z ${fmt(w.z, 1)}` },
+        h("b", { text: w.word }), h("small", { text: w.ratio ? `×${w.ratio >= 10 ? Math.round(w.ratio) : w.ratio}` : "new" }));
+    });
+  }
+  function renderTrending(s) {
+    const list = s.trending || [];
+    const key = list.map((w) => `${w.word}:${w.count}`).join("|");
+    if (key === S.trendKey) return;
+    S.trendKey = key;
+    $("#trending").replaceChildren(...(list.length ? trendChips(list)
+      : [h("span", { class: "muted", text: "Nothing stands out: the last hour's words look like a normal week's." })]));
+  }
+
   // Same bands as the Optimize-for dialog: off topic < 10% ≤ slightly < 50% ≤ mostly < 90% ≤ clearly.
   function relTag(rel, focus) {
     const b = focus && focus.background_weight != null ? focus.background_weight : 0.05;
@@ -1276,6 +1424,8 @@
     $("#focusBg").value = String(Math.round((f.background_weight ?? 0.05) * 100));
     setText($("#focusBgVal"), `${$("#focusBg").value}%`);
     markPreset();
+    $("#focusSugg").replaceChildren();
+    S.suggestions = [];
     $("#focusDlg").showModal();
     previewFocus();
   }
@@ -1385,7 +1535,418 @@
     $("#focusText").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); applyFocus(focusBody().text); } });
     $("#focusBg").addEventListener("input", () => { setText($("#focusBgVal"), `${$("#focusBg").value}%`); schedulePreview(); });
     $("#focusApply").addEventListener("click", () => applyFocus(focusBody().text));
+    $("#focusSuggest").addEventListener("click", suggestPhrases);
+    $("#focusSugg").addEventListener("click", (e) => {
+      const chip = e.target.closest("[data-phrase]"), all = e.target.closest("#focusAddAll");
+      if (!chip && !all) return;
+      if (chip) addPhrase(chip.dataset.phrase);
+      else for (const ph of S.suggestions || []) addPhrase(ph);
+      paintSuggestions(S.suggestions || []);
+      schedulePreview();
+    });
     $("#focusReset").addEventListener("click", () => applyFocus(""));
+  }
+
+  // ================================================================ "this moment" (click on the timeline)
+  function momentText(m) {
+    const d = m.decision || {};
+    const z = { panic: m.panic_z, drift: m.drift_z, volume: m.volume_z };
+    switch (d.rule) {
+      case "escalate": case "deescalate_after_cooldown": case "monitor_not_ready":
+      case "operator_flatten": case "operator_clear_flatten":
+        return storyText({ rule: d.rule, reason: d.reason, components: JSON.stringify(z) });
+      case "cooldown_pending":
+        return `Calming down: the news had to stay calm for ${S.status ? S.status.thresholds.cooldown_minutes : 30} minutes before the level could relax.`;
+      case "operator_flatten_hold":
+        return "An emergency instruction was in force; only an operator could lift it.";
+      default: {
+        const hot = SIGNALS.filter((sig) => z[sig.key] != null && z[sig.key] >= 2).map((sig) => sig.rise);
+        return `No change: the level stayed at “${level(m.state).title}”` + (hot.length ? ` while ${joinAnd(hot)}.` : ".");
+      }
+    }
+  }
+  async function openMoment(row) {
+    const card = $("#momentCard");
+    card.hidden = false;
+    setText($("#momentTitle"), `What was going on at ${fmtFull(row.as_of)}`);
+    setText($("#momentSub"), S.status && S.status.mode === "replay" ? "simulated time" : "UTC");
+    $("#momentBody").replaceChildren(h("p", { class: "muted", text: "Loading…" }));
+    const seq = ++S.momentSeq;
+    try {
+      const m = await api(`/api/moment?t=${encodeURIComponent(row.as_of)}`);
+      if (seq !== S.momentSeq) return;
+      S.moment = m;
+      renderMoment(m);
+    } catch (e) {
+      if (seq === S.momentSeq) $("#momentBody").replaceChildren(h("p", { class: "muted", text: `Couldn't load this moment: ${e.message}` }));
+    }
+    card.scrollIntoView({ block: "nearest", behavior: reduceMotion ? "auto" : "smooth" });
+  }
+  function closeMoment() {
+    $("#momentCard").hidden = true;
+    S.moment = null;
+    S.momentSeq++;
+    bigChart.pickT = null;
+    bigChart.draw();
+  }
+  function renderMoment(m) {
+    const L = level(m.state), d = m.decision || {};
+    const cp = d.changepoint || {};
+    const signals = SIGNALS.map((sig) => {
+      const z = m[sig.z], t = zTone(z);
+      return h("div", { class: "mo-sig" }, h("span", { class: "mo-sig-name", text: sig.name }),
+        h("span", { class: "pill", dataset: { tone: t.tone }, text: t.word }), h("span", { class: "mono", text: z == null ? "z –" : `z ${fmt(z, 2)}` }));
+    });
+    const last = m.last_change;
+    const heads = m.headlines || [];
+    const ai = S.status && S.status.ai && S.status.ai.enabled;
+    $("#momentBody").replaceChildren(
+      h("div", { class: "mo-top" },
+        h("span", { class: "mo-level", dataset: { tone: L.tone }, html: `${icon(L.icon)}<b>${L.title}</b>` }),
+        h("span", { class: "mo-score", html: `Risk <b>${fmt(m.risk_score, 2)}</b>` }),
+        cp.alarm_active ? h("span", { class: "mo-flag", html: `${icon("bolt")}sudden-change alarm` }) : null,
+        !m.monitor_ready ? h("span", { class: "mo-flag", text: "not ready" }) : m.degraded ? h("span", { class: "mo-flag", text: "missing data" }) : null),
+      h("p", { class: "mo-why", text: momentText(m) }),
+      h("p", { class: "x mono mo-rule", text: `${d.rule || "–"}: ${d.reason || ""}` }),
+      h("div", { class: "mo-sigs" }, ...signals),
+      last ? h("p", { class: "mo-last", text: `Last level change before this: ${level(last.prev_state).title} → ${level(last.new_state).title} at ${fmtFull(last.as_of)}.` }) : null,
+      (m.trending || []).length ? h("div", { class: "trend small" }, h("span", { class: "muted small", text: "Trending then:" }), ...trendChips(m.trending)) : null,
+      ai ? h("div", { class: "ai-box mo-ai", id: "momentAI" },
+        h("div", { class: "ai-head" }, h("span", { class: "ai-ico", html: icon("sparkle") }), h("b", { text: "AI summary of this moment" }),
+          h("span", { class: "ai-meta", id: "momentAIMeta" }),
+          h("button", { class: "btn ghost small", type: "button", id: "momentAIBtn", text: "Write it" })),
+        h("p", { class: "ai-text", id: "momentAIText", text: "Gemini reads the numbers and headlines below and explains them in plain English. It never changes the level." })) : null,
+      h("h3", { class: "small-h", text: heads.length ? "Most negative headlines in the hour before" : "No headlines in the hour before" }),
+      h("ul", { class: "headlines compact", id: "momentHeads" }, ...heads.map((x, i) => {
+        const p = x.p_negative;
+        return h("li", { dataset: { n: String(i + 1) } },
+          h("div", { class: "hl-text" }, x.headline, x.relevance == null ? null : relTag(x.relevance, S.status && S.status.focus)),
+          h("div", { class: "hl-meta" }, h("span", { text: x.source || "" }), h("span", { text: fmtFull(x.event_time) }),
+            h("span", { text: p == null ? "not scored" : `${Math.round(p * 100)}% negative` })));
+      })));
+    if (ai) $("#momentAIBtn").addEventListener("click", () => summariseMoment(m.as_of));
+  }
+  async function summariseMoment(asOf) {
+    const btn = $("#momentAIBtn"), text = $("#momentAIText");
+    if (!btn) return;
+    btn.disabled = true;
+    btn.classList.add("busy");
+    text.classList.add("loading");
+    try {
+      const r = await post("/api/ai/summary", { t: asOf });
+      if (!S.moment || S.moment.as_of !== asOf) return;
+      setText(text, r.summary);
+      setText($("#momentAIMeta"), aiMeta(r));
+      for (const li of $$("#momentHeads li")) li.classList.toggle("used", r.headlines_used.includes(Number(li.dataset.n)));
+      setText(btn, "Rewrite");
+    } catch (e) {
+      setText(text, `No AI summary right now: ${e.message}`);
+    } finally {
+      btn.disabled = false;
+      btn.classList.remove("busy");
+      text.classList.remove("loading");
+    }
+  }
+
+  // ================================================================ same news, two settings (pre-computed runs)
+  function runLabel(run) {
+    const preset = run.focus && FOCUS_PRESETS.find((p) => p.text && p.text.toLowerCase() === run.focus.toLowerCase());
+    const focus = !run.focus ? "Whole market" : preset ? preset.label : `Optimize for “${run.focus}”`;
+    const runs = (S.compare && S.compare.runs) || [];
+    const mixed = runs.some((r) => r.fallback) && runs.some((r) => !r.fallback);
+    return mixed ? `${focus} · ${run.fallback ? "simplified AI" : "AI models"}` : focus;
+  }
+  async function loadCompare(s) {
+    const fx = s.replay && s.replay.fixture;
+    if (!fx || S.compareFor === fx) return;
+    S.compareFor = fx;
+    try {
+      const c = await api("/api/compare");
+      S.compare = c.runs && c.runs.length >= 2 ? c : null;
+    } catch (_) { S.compare = null; }
+    renderCompare(true);
+  }
+  function renderCompare(fresh) {
+    const card = $("#compareCard"), c = S.compare;
+    card.hidden = !c;
+    if (!c || S.tab !== "timeline") return;
+    const runs = c.runs.slice(0, 3);
+    const colors = ["--axis-ink", "--s1", "--s2"];
+    if (fresh || !S.compareRows) {
+      const byT = new Map();
+      runs.forEach((run, k) => {
+        for (const [t, r] of run.series) {
+          let row = byT.get(t);
+          if (!row) { row = { as_of: t }; byT.set(t, row); }
+          row[`r${k}`] = r;
+        }
+      });
+      S.compareRows = [...byT.values()].sort((a, b) => (a.as_of < b.as_of ? -1 : 1));
+      const legend = runs.map((run, k) => h("span", { class: "lk" }, h("span", { class: "line", style: { background: `var(${colors[k]})` } }),
+        `${runLabel(run)}${run.first_halt_evidence ? ` · first Stop ${fmtFull(run.first_halt_evidence)}` : " · no Stop"}${run.peak_risk_score != null ? ` · peak ${fmt(run.peak_risk_score, 2)}` : ""}`));
+      $("#compareLegend").replaceChildren(...legend, h("span", { class: "lk" }, h("span", { class: "dash" }), "Be careful / Stop thresholds"));
+      const synthetic = !!(S.status && S.status.synthetic);
+      setText($("#compareNote"), "Each line is an evaluation run of exactly this data (same file fingerprint), made by `vetosentinel evaluate`. "
+        + "Dashed lines mark each run's first score-driven Stop. "
+        + (synthetic ? "Invented data: this shows the mechanics only, not real-world performance."
+          : (runs.some((r) => r.focus) ? "The topics were written before the runs and nothing was tuned afterwards. " : "")
+            + "One event: an illustration, not proof."));
+    }
+    const marks = runs.map((run, k) => run.first_halt_evidence
+      ? { t: run.first_halt_evidence, color: colors[k], label: `first Stop · ${runLabel(run)}`, row: k } : null).filter(Boolean);
+    const now = S.status && S.status.replay.mode === "replay" ? S.status.replay.sim_time : null;
+    compareChart.o.marks = now ? [...marks, { t: now, color: "--accent", solid: true, label: "replay now", row: runs.length }] : marks;
+    compareChart.set(S.compareRows, runs.map((run, k) => ({ key: `r${k}`, color: colors[k], width: k ? 2.2 : 1.8, name: runLabel(run) })));
+    if (fresh) compareChart.animateIn(); else compareChart.draw();
+  }
+
+  // ================================================================ AI summary (Gemini; advisory text only)
+  const AI = { key: "", timer: 0, busy: false, shown: "" };
+  function aiMeta(r) {
+    const model = String(r.model || "").replace(/^gemini-/, "Gemini ").replace(/-/g, " ");
+    return `${model}${r.cached ? " · cached" : ""} · advisory, can be wrong`;
+  }
+  function renderAI(s) {
+    const box = $("#aiBox");
+    const on = !!(s.ai && s.ai.enabled);
+    box.hidden = !on;
+    $("#focusAI").hidden = !on;
+    if (!on) return;
+    // A new summary once the level and its headlines have held still for 6 s (so a fast replay
+    // doesn't spend the quota); the refresh button asks straight away.
+    const key = `${s.run_id}|${s.state}|${(s.top_headlines || []).map((x) => x.headline_id).join(",")}`;
+    if (key === AI.key) return;
+    AI.key = key;
+    $("#aiText").classList.toggle("stale", !!AI.shown);
+    if (!AI.shown) setText($("#aiText"), "Writing a plain-English summary of the news behind this level…");
+    window.clearTimeout(AI.timer);
+    AI.timer = window.setTimeout(() => requestSummary(), 6000);
+  }
+  async function requestSummary() {
+    if (AI.busy) return;
+    AI.busy = true;
+    const btn = $("#aiRefresh"), text = $("#aiText");
+    btn.classList.add("spin");
+    try {
+      const r = await post("/api/ai/summary", {});
+      AI.shown = r.summary;
+      setText(text, r.summary);
+      setText($("#aiMeta"), aiMeta(r));
+      text.classList.remove("stale");
+    } catch (e) {
+      setText($("#aiMeta"), "");
+      if (!AI.shown) setText(text, `No AI summary right now (${e.message}). The level and reasons above don't depend on it.`);
+    } finally {
+      AI.busy = false;
+      btn.classList.remove("spin");
+    }
+  }
+
+  // AI phrase suggestions in the Optimize-for dialog: the user picks which ones to add.
+  function focusPhrases() {
+    return $("#focusText").value.split(/[,;\n]+/).map((x) => x.trim()).filter(Boolean);
+  }
+  function addPhrase(phrase) {
+    const have = focusPhrases();
+    if (have.some((x) => x.toLowerCase() === phrase.toLowerCase()) || have.length >= 12) return false;
+    const next = [...have, phrase].join(", ");
+    if (next.length > 300) return false;
+    $("#focusText").value = next;
+    return true;
+  }
+  function paintSuggestions(list) {
+    const have = new Set(focusPhrases().map((x) => x.toLowerCase()));
+    const box = $("#focusSugg");
+    const chips = list.map((ph) => h("button", { type: "button", class: "fd-chip sugg", dataset: { phrase: ph }, disabled: have.has(ph.toLowerCase()) ? "" : null,
+      html: `${icon(have.has(ph.toLowerCase()) ? "check" : "sparkle")}<span></span>` }));
+    chips.forEach((c, i) => setText(c.querySelector("span"), list[i]));
+    const left = list.filter((ph) => !have.has(ph.toLowerCase()));
+    box.replaceChildren(...chips, left.length > 1 ? h("button", { type: "button", class: "btn ghost small", id: "focusAddAll", text: "Add all" }) : null);
+  }
+  async function suggestPhrases() {
+    const btn = $("#focusSuggest"), box = $("#focusSugg");
+    const text = focusBody().text;
+    if (!text) { box.replaceChildren(h("span", { class: "muted small", text: "Type a topic first (for example “OPEC”), then ask for more phrases." })); return; }
+    btn.classList.add("busy");
+    btn.disabled = true;
+    try {
+      const r = await post("/api/ai/focus-suggest", { text });
+      S.suggestions = r.phrases;
+      paintSuggestions(r.phrases);
+    } catch (e) {
+      box.replaceChildren(h("span", { class: "muted small", text: `No suggestions right now: ${e.message}` }));
+    } finally {
+      btn.classList.remove("busy");
+      btn.disabled = false;
+    }
+  }
+
+  // ================================================================ heartbeat logo, sound, level-change effects
+  const LEVEL_RANK = { NORMAL: 0, CAUTION: 1, HALT: 2, FLATTEN: 3 };
+  // Optional sound (off by default; remembered per browser): an ECG blip per heartbeat on the
+  // Trading bots tab, a flatline tone while the bot hears nothing, and chimes on level changes.
+  const Sound = {
+    on: false, ctx: null, flatNode: null,
+    load() {
+      try { this.on = localStorage.getItem("vs-sound") === "1"; } catch (_) { /* ignore */ }
+      this.paint();
+    },
+    paint() {
+      const b = $("#soundToggle");
+      b.innerHTML = icon(this.on ? "volume" : "mute");
+      b.setAttribute("aria-pressed", String(this.on));
+      b.title = this.on ? "Sound on: level chimes, flatline alarm, heartbeat beeps on the Trading bots tab" : "Sound (off)";
+      b.setAttribute("aria-label", this.on ? "Sound on: click to mute" : "Sound off: click for heartbeat beeps and level chimes");
+    },
+    toggle() {
+      this.on = !this.on;
+      try { localStorage.setItem("vs-sound", this.on ? "1" : "0"); } catch (_) { /* ignore */ }
+      if (this.on) this.chime([523, 659, 784]); else this.flat(false);
+      this.paint();
+    },
+    audio() {
+      if (!this.ctx) {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return null;
+        this.ctx = new AC();
+      }
+      if (this.ctx.state === "suspended") this.ctx.resume();
+      return this.ctx;
+    },
+    tone(freq, dur, { type = "sine", gain = 0.05, at = 0 } = {}) {
+      const ctx = this.audio();
+      if (!ctx) return;
+      const t = ctx.currentTime + at, o = ctx.createOscillator(), g = ctx.createGain();
+      o.type = type;
+      o.frequency.value = freq;
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(gain, t + 0.012);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+      o.connect(g).connect(ctx.destination);
+      o.start(t);
+      o.stop(t + dur + 0.02);
+    },
+    chime(notes, type = "sine") {
+      if (this.on) notes.forEach((f, i) => this.tone(f, 0.35, { type, gain: 0.06, at: i * 0.13 }));
+    },
+    beat() {
+      if (this.on && S.tab === "bots" && !document.hidden && !this.flatNode) this.tone(880, 0.08, { gain: 0.045 });
+    },
+    flat(on) {
+      if (on && this.on && !this.flatNode) {
+        const ctx = this.audio();
+        if (!ctx) return;
+        const o = ctx.createOscillator(), g = ctx.createGain();
+        o.frequency.value = 1000;
+        g.gain.value = 0.022;
+        o.connect(g).connect(ctx.destination);
+        o.start();
+        this.flatNode = { o, g };
+      } else if (!on && this.flatNode) {
+        const { o, g } = this.flatNode;
+        this.flatNode = null;
+        g.gain.setTargetAtTime(0.0001, this.ctx.currentTime, 0.04);
+        o.stop(this.ctx.currentTime + 0.3);
+      }
+    },
+    level(from, to) {
+      if (!this.on) return;
+      if ((LEVEL_RANK[to] ?? 2) > (LEVEL_RANK[from] ?? 2)) this.chime(to === "CAUTION" ? [659, 523] : [587, 440, 349], "triangle");
+      else this.chime(to === "NORMAL" ? [523, 659, 784, 1047] : [440, 554]);
+    },
+  };
+
+  // The header logo pulses once per heartbeat the demo bot really receives, and flatlines when
+  // they stop (the same count that drives the ECG on the Trading bots tab).
+  const Heart = {
+    beat(n) {
+      for (let i = 0; i < Math.min(n, 3); i++) window.setTimeout(() => this.pulse(), i * 320);
+    },
+    pulse() {
+      const svg = $(".brand svg");
+      svg.classList.remove("beat");
+      void svg.getBoundingClientRect();
+      svg.classList.add("beat");
+      Sound.beat();
+    },
+    flat(on) {
+      $(".brand").classList.toggle("flat", on);
+      Sound.flat(on);
+    },
+  };
+
+  // Level changes: a colour sweep with a stamp, the tab title and favicon, and a short burst of
+  // green confetti back at "All clear". At most one sweep per 4 s, so fast replays stay calm.
+  const TITLE_MARK = { NORMAL: "🟢", CAUTION: "🟡", HALT: "🛑", FLATTEN: "🚨" };
+  const FX = { last: 0, title: "" };
+  function renderTabIdentity(s) {
+    const L = level(s.state);
+    const title = `${TITLE_MARK[s.state] || ""} ${L.title} · Veto Sentinel`;
+    if (title === FX.title) return;
+    FX.title = title;
+    document.title = title;
+    const color = css(`--${L.tone}`) || "#d03b3b";
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><path d="M32 5 55 14v18c0 13.6-10.2 23.8-23 27C19.2 55.8 9 45.6 9 32V14z" fill="${color}"/>`
+      + `<path d="M17 34h8l4-9 6 16 4-8h8" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+    document.querySelector('link[rel="icon"]').href = `data:image/svg+xml,${encodeURIComponent(svg)}`;
+  }
+  function levelEffects(from, to) {
+    Sound.level(from, to);
+    const now = performance.now();
+    if (reduceMotion || now - FX.last < 4000) return;
+    FX.last = now;
+    const L = level(to);
+    let tk = $(".takeover");
+    if (!tk) {
+      tk = h("div", { class: "takeover", "aria-hidden": "true" }, h("div", { class: "stamp" }));
+      document.body.append(tk);
+    }
+    tk.style.setProperty("--tk", `var(--${L.tone})`);
+    tk.classList.toggle("soft", to === "CAUTION" || LEVEL_RANK[to] < LEVEL_RANK[from]);
+    setText($(".stamp", tk), L.title);
+    tk.classList.remove("go");
+    void tk.offsetWidth;
+    tk.classList.add("go");
+    if (to === "NORMAL") confetti();
+  }
+  function confetti() {
+    const cv = h("canvas", { class: "confetti", "aria-hidden": "true" });
+    document.body.append(cv);
+    const dpr = Math.min(window.devicePixelRatio || 1, 2), W = innerWidth, H = innerHeight;
+    cv.width = W * dpr;
+    cv.height = H * dpr;
+    const ctx = cv.getContext("2d");
+    ctx.scale(dpr, dpr);
+    const orb = $("#orbIcon").getBoundingClientRect();
+    const ox = orb.width ? orb.left + orb.width / 2 : W / 2, oy = orb.height ? orb.top + orb.height / 2 : H / 3;
+    const colors = [css("--good"), "#86efac", "#34d399", "#f0fdf4", "#2dd4bf"];
+    const ps = Array.from({ length: 90 }, () => {
+      const a = Math.random() * Math.PI * 2, v = 4 + Math.random() * 7;
+      return { x: ox, y: oy, vx: Math.cos(a) * v, vy: Math.sin(a) * v - 4, r: 3 + Math.random() * 4,
+        rot: Math.random() * 6, vr: (Math.random() - 0.5) * 0.4, c: colors[(Math.random() * colors.length) | 0] };
+    });
+    const t0 = performance.now();
+    const frame = (t) => {
+      const k = (t - t0) / 1600;
+      ctx.clearRect(0, 0, W, H);
+      if (k >= 1) { cv.remove(); return; }
+      for (const p of ps) {
+        p.vy += 0.25;
+        p.vx *= 0.985;
+        p.x += p.vx;
+        p.y += p.vy;
+        p.rot += p.vr;
+        ctx.save();
+        ctx.globalAlpha = 1 - k * k;
+        ctx.translate(p.x, p.y);
+        ctx.rotate(p.rot);
+        ctx.fillStyle = p.c;
+        ctx.fillRect(-p.r, -p.r * 0.45, p.r * 2, p.r * 0.9);
+        ctx.restore();
+      }
+      requestAnimationFrame(frame);
+    };
+    requestAnimationFrame(frame);
   }
 
   // ================================================================ bots tab
@@ -1498,15 +2059,20 @@
     const badge = $("#ecgBadge"), face = $("#botFace");
     if (!c) {
       ecg.mode = "flat";
+      Heart.flat(false); // no demo bot in this process: nothing to listen to (not a fault)
       setText(badge, "No example bot running");
       badge.className = "ecg-badge bad";
       setText($("#botTitle"), "No example bot");
       setText($("#botDesc"), "Start the dashboard with its built-in demo client to see a bot here.");
       return;
     }
-    if (S.lastValid != null && c.stats.valid > S.lastValid) ecg.beat(c.stats.valid - S.lastValid);
+    if (S.lastValid != null && c.stats.valid > S.lastValid) {
+      ecg.beat(c.stats.valid - S.lastValid);
+      Heart.beat(c.stats.valid - S.lastValid);
+    }
     S.lastValid = c.stats.valid;
     const stale = c.heartbeat_age_s == null || c.heartbeat_age_s > c.timeout_s || c.fault === "stale_heartbeat";
+    Heart.flat(stale);
     ecg.mode = stale ? "flat" : c.in_fault ? "warn" : "ok";
     const L = level(c.local_state);
     let title, desc, tone;
@@ -1561,6 +2127,271 @@
         }
       }
     }
+  }
+
+  // ================================================================ order gate (#8): what can_submit_order() decides
+  // Dots are the example bot's simulated orders (s.orders.recent: id, opening, allowed, would_block),
+  // each decided by the real SDK call on the server. Top lane opens positions, bottom lane reduces.
+  // The barriers show the bot's own local level: "Be careful" lowers the top one, "Stop" both.
+  class Gate {
+    constructor(canvas, mini) {
+      this.c = canvas;
+      this.ctx = canvas.getContext("2d");
+      this.mini = mini;
+      this.dots = [];
+      this.flashes = [];
+      this.lastId = null;
+      this.state = "HALT";
+      this.shadow = false;
+      this.bar = [1, 1]; // 0 = open, 1 = closed, per lane (animated)
+      this.last = performance.now();
+      new ResizeObserver(() => this.resize()).observe(canvas.parentElement);
+      requestAnimationFrame((t) => this.frame(t));
+    }
+    resize() {
+      const r = this.c.getBoundingClientRect(), dpr = Math.min(window.devicePixelRatio || 1, 2);
+      this.W = r.width;
+      this.H = r.height;
+      this.c.width = Math.max(1, Math.round(r.width * dpr));
+      this.c.height = Math.max(1, Math.round(r.height * dpr));
+      this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+    feed(orders, localState) {
+      this.state = localState;
+      this.shadow = !!orders.shadow;
+      const recent = orders.recent || [];
+      const top = recent.length ? recent[recent.length - 1][0] : this.lastId;
+      if (this.lastId == null) { this.lastId = top; return; } // no backlog burst on first sight
+      const fresh = recent.filter((o) => o[0] > this.lastId);
+      this.lastId = top;
+      if (reduceMotion || !this.c.offsetParent) return;
+      fresh.forEach((o, i) => window.setTimeout(() => this.spawn(o), (i * 1000) / Math.max(1, fresh.length)));
+    }
+    spawn([, opening, allowed, would]) {
+      if (this.dots.length < 60) this.dots.push({ lane: opening ? 0 : 1, x: -6, v: this.mini ? 150 : 230, allowed, would, done: false, a: 1 });
+    }
+    laneY(i) { return this.H * (this.mini ? (i ? 0.72 : 0.3) : (i ? 0.7 : 0.32)); }
+    frame(t) {
+      requestAnimationFrame((tt) => this.frame(tt));
+      const dt = Math.min(0.05, (t - this.last) / 1000);
+      this.last = t;
+      if (!this.c.offsetParent || !this.W) return;
+      const closed = this.state === "NORMAL" ? [0, 0] : this.state === "CAUTION" ? [1, 0] : [1, 1];
+      for (const i of [0, 1]) this.bar[i] += (closed[i] - this.bar[i]) * Math.min(1, dt * 8);
+      const gx = this.W * 0.58;
+      for (const d of this.dots) {
+        d.x += d.v * dt;
+        if (!d.done && d.x >= gx - 7) {
+          d.done = true;
+          if (!d.allowed) { d.v = -d.v * 0.45; this.flashes.push({ x: gx, y: this.laneY(d.lane), k: 1, bad: true }); }
+          else if (d.would) this.flashes.push({ x: gx, y: this.laneY(d.lane), k: 1, bad: false });
+        }
+        if (d.done && !d.allowed) d.a -= dt * 1.6;
+      }
+      this.dots = this.dots.filter((d) => d.a > 0 && d.x < this.W + 10 && d.x > -20);
+      for (const f of this.flashes) f.k -= dt * 2;
+      this.flashes = this.flashes.filter((f) => f.k > 0);
+      this.draw(gx);
+    }
+    draw(gx) {
+      const { ctx, W, H } = this, ink2 = css("--ink-2"), muted = css("--muted"), hair = css("--hair-2");
+      const good = css("--good"), bad = css("--critical"), warn = css("--warning");
+      ctx.clearRect(0, 0, W, H);
+      ctx.font = `600 ${this.mini ? 10.5 : 12}px ${css("--font")}`;
+      ctx.textBaseline = "middle";
+      const labels = this.mini ? ["open", "reduce"] : ["Open a position", "Reduce or close"];
+      for (const i of [0, 1]) {
+        const y = this.laneY(i);
+        ctx.strokeStyle = hair;
+        ctx.lineWidth = this.mini ? 10 : 16;
+        ctx.lineCap = "round";
+        ctx.globalAlpha = 0.5;
+        ctx.beginPath(); ctx.moveTo(8, y); ctx.lineTo(W - 8, y); ctx.stroke();
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = muted;
+        ctx.textAlign = "left";
+        ctx.fillText(labels[i], 10, y - (this.mini ? 11 : 17));
+        // barrier: drops down across the lane when closed (dashed in shadow mode: it never blocks)
+        const k = this.bar[i], len = this.mini ? 16 : 24;
+        ctx.strokeStyle = this.shadow && k > 0.5 ? warn : k > 0.5 ? bad : good;
+        ctx.lineWidth = this.mini ? 3 : 4;
+        if (this.shadow && k > 0.5) ctx.setLineDash([4, 3]);
+        ctx.beginPath();
+        ctx.moveTo(gx, y - len);
+        ctx.lineTo(gx, y - len + Math.max(0.15, k) * len * 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = ink2;
+        ctx.beginPath(); ctx.arc(gx, y - len, 3, 0, Math.PI * 2); ctx.fill();
+        if (!this.mini) {
+          ctx.fillStyle = this.shadow && k > 0.5 ? warn : k > 0.5 ? bad : good;
+          ctx.textAlign = "left";
+          ctx.fillText(k > 0.5 ? (this.shadow ? "closed · shadow: lets it through" : "closed") : "open", gx + 10, y - len + 2);
+        }
+      }
+      if (!this.mini) {
+        ctx.fillStyle = muted;
+        ctx.textAlign = "right";
+        ctx.fillText("market (simulated) →", W - 10, H - 12);
+        ctx.textAlign = "left";
+        ctx.fillText("bot →", 10, H - 12);
+      }
+      for (const d of this.dots) {
+        const y = this.laneY(d.lane);
+        ctx.globalAlpha = Math.max(0, d.a);
+        ctx.fillStyle = d.would && d.done ? warn : d.lane ? css("--s3") : css("--s1");
+        ctx.beginPath(); ctx.arc(d.x, y, this.mini ? 4 : 5.5, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+      for (const f of this.flashes) {
+        ctx.strokeStyle = f.bad ? bad : warn;
+        ctx.globalAlpha = f.k;
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(f.x, f.y, (this.mini ? 8 : 12) + (1 - f.k) * 14, 0, Math.PI * 2); ctx.stroke();
+        if (f.bad) {
+          const r = this.mini ? 4 : 6;
+          ctx.beginPath(); ctx.moveTo(f.x - r, f.y - r); ctx.lineTo(f.x + r, f.y + r); ctx.moveTo(f.x + r, f.y - r); ctx.lineTo(f.x - r, f.y + r); ctx.stroke();
+        }
+      }
+      ctx.globalAlpha = 1;
+    }
+  }
+  const gateBig = new Gate($("#gateCanvas"), false);
+  const gateMini = new Gate($("#gateMini"), true);
+  function renderGate(s) {
+    const o = s.orders, c = s.client;
+    $("#gateCard").hidden = !o;
+    $("#gateMini").parentElement.hidden = !o;
+    if (!o || !c) return;
+    const stale = c.heartbeat_age_s == null || c.heartbeat_age_s > c.timeout_s;
+    const local = stale ? "HALT" : c.local_state;
+    gateBig.feed(o, local);
+    gateMini.feed(o, local);
+    const n = o.counts;
+    $("#gateStats").replaceChildren(...[
+      h("span", { class: "gs ok" }, h("b", { text: n.allowed.toLocaleString("en-GB") }), " allowed"),
+      h("span", { class: "gs bad" }, h("b", { text: n.blocked.toLocaleString("en-GB") }), " blocked"),
+      o.shadow || n.would_block ? h("span", { class: "gs warn" }, h("b", { text: n.would_block.toLocaleString("en-GB") }), " would have been blocked (shadow mode)") : null,
+      h("span", { class: "gs muted" }, `one order every ${o.every_s} s`)].filter(Boolean));
+    const sw = $("#shadowToggle");
+    $("#shadowSwitch").hidden = !(s.demo && s.demo.controls);
+    if (document.activeElement !== sw) sw.checked = !!o.shadow;
+  }
+
+  // ================================================================ connected bots (#35)
+  function fleetStatus(b) {
+    if (b.status === "stopped") return ["stopped (said goodbye)", "off"];
+    if (b.status === "silent") return [`silent for ${Math.round(b.report_age_s)} s`, "bad"];
+    if (b.in_fault) return [`paused for safety: ${((FAULTS[b.fault] || [b.fault || "fault"])[0]).toLowerCase()}`, "warn"];
+    return [`following Veto Sentinel · seq ${b.last_seq ?? "–"}`, "ok"];
+  }
+  function fmtNs(ns) { return ns == null ? "–" : ns < 1000 ? `${Math.round(ns)} ns` : `${(ns / 1000).toFixed(ns < 1e4 ? 2 : 1)} µs`; }
+  function renderFleet(s) {
+    const box = $("#fleet"), bots = s.fleet || [];
+    const demo = s.demo || {};
+    $("#cppStart").hidden = !(demo.controls && demo.cpp_bot_built);
+    $("#fleetCard").hidden = !bots.length && !demo.cpp_bot_built;
+    const seen = new Set();
+    for (const b of bots) {
+      seen.add(b.client_id);
+      let row = box.querySelector(`[data-cid="${b.client_id}"]`);
+      if (!row) {
+        row = h("div", { class: "fl-row", dataset: { cid: b.client_id } },
+          h("span", { class: "fl-ico", html: icon(b.sdk === "cpp" ? "cpu" : "bot") }),
+          h("div", { class: "fl-name" }, h("b"), h("small")),
+          h("span", { class: "pill fl-level" }),
+          h("span", { class: "fl-status" }),
+          h("span", { class: "fl-num fl-check", title: "Cost of one order check, measured by the bot itself" }),
+          h("span", { class: "fl-num fl-lat", title: "How long the last heartbeat took to arrive" }),
+          h("span", { class: "fl-shadow" }),
+          h("span", { class: "fl-act" }));
+        box.append(row);
+      }
+      const L = level(b.local_state), [st, tone] = fleetStatus(b);
+      row.dataset.status = b.status;
+      setText($(".fl-name b", row), b.name || b.client_id);
+      setText($(".fl-name small", row), `${b.sdk === "cpp" ? "C++" : "Python"} · pid ${b.pid ?? "?"} · ${b.host || ""}`);
+      const pill = $(".fl-level", row);
+      setText(pill, b.status === "ok" ? L.title : "–");
+      pill.dataset.tone = b.status === "ok" ? L.tone : "na";
+      setText($(".fl-status", row), st);
+      $(".fl-status", row).dataset.tone = tone;
+      setText($(".fl-check", row), `check ${fmtNs(b.check_ns)}`);
+      setText($(".fl-lat", row), b.bus_latency_ms == null ? "" : `heartbeat in ${b.bus_latency_ms.toFixed(1)} ms`);
+      setText($(".fl-shadow", row), b.shadow ? `shadow · would have blocked ${b.would_block}` : "");
+      const act = $(".fl-act", row);
+      const mine = (demo.cpp_bots || []).includes(b.pid) && b.status === "ok";
+      if (act.dataset.mine !== String(mine)) {
+        act.dataset.mine = String(mine);
+        act.replaceChildren(...(mine ? [
+          h("button", { class: "btn ghost small", type: "button", dataset: { pid: String(b.pid), how: "stop" }, text: "Stop", title: "SIGTERM: it shuts down and says goodbye" }),
+          h("button", { class: "btn danger small", type: "button", dataset: { pid: String(b.pid), how: "kill" }, text: "Pull the plug", title: "SIGKILL: it just goes silent, like a crash" })] : []));
+      }
+    }
+    for (const row of [...box.children]) if (row.dataset.cid && !seen.has(row.dataset.cid)) row.remove();
+    if (!bots.length && !box.querySelector(".empty")) box.replaceChildren(h("p", { class: "empty", text: "No bots are reporting yet." }));
+    else if (bots.length) box.querySelector(".empty")?.remove();
+  }
+
+  // ================================================================ where the time goes (#34)
+  function fmtSec(x) {
+    if (x == null) return "–";
+    if (x < 1e-6) return `${Math.max(1, Math.round(x * 1e9))} ns`;
+    if (x < 1e-3) return `${(x * 1e6).toFixed(x < 1e-5 ? 1 : 0)} µs`;
+    if (x < 1) return `${(x * 1e3).toFixed(x < 0.01 ? 2 : x < 0.1 ? 1 : 0)} ms`;
+    if (x < 120) return `${x.toFixed(x < 10 ? 1 : 0)} s`;
+    return `${Math.round(x / 60)} min`;
+  }
+  function renderSpeed(s) {
+    const t = s.timing;
+    if (!t) return;
+    const rows = [];
+    if (t.mode === "live") {
+      rows.push(["GDELT collects news into batches", 900, "a new batch every 15 minutes (GDELT's design, not measured)", "fixed"]);
+      rows.push(["Batch complete → judged here", t.data_lag_s, "how far behind real time the assessed news is right now"]);
+    } else {
+      rows.push(["News arrives", null, "a replay reads news from a file on a simulated clock"]);
+    }
+    const f = (t.fetches || []).filter((x) => x.seconds != null).sort((a, b) => b.seconds - a.seconds)[0];
+    if (f) rows.push([`Download + read new news (${f.name})`, f.seconds, `${f.items} headlines in the last fetch`]);
+    const m = t.model || {};
+    if (m.ms_per_headline != null) rows.push(["AI reads one headline", m.ms_per_headline / 1000,
+      m.source === "model" ? `FinBERT + MiniLM on this CPU, averaged over ${m.headlines.toLocaleString("en-GB")} headlines`
+        : s.fallback_in_use ? "simplified word-list models (no AI loaded), last batch" : "last batch (repeat headlines come from the result cache)"]);
+    if (t.decision_ms != null) rows.push(["One decision", t.decision_ms / 1000, "three signals, the score, the change detector, the level, the audit log"]);
+    if (t.bus_latency_ms != null) rows.push(["Heartbeat reaches a bot", t.bus_latency_ms / 1000, "ZeroMQ on this machine"]);
+    if (t.check_ns_python != null) rows.push(["Order check: Python bot", t.check_ns_python / 1e9, "can_submit_order(): local memory only, no network"]);
+    rows.push(["Order check: C++ bot", t.check_ns_cpp == null ? null : t.check_ns_cpp / 1e9,
+      t.check_ns_cpp == null ? "start a C++ bot (above) to measure it" : "atomic loads + one clock read, timed over a million calls"]);
+    const lo = -9, hi = Math.log10(3600);
+    const key = JSON.stringify(rows.map((r) => [r[0], r[1] == null ? null : Number(r[1].toPrecision(2))]));
+    if (key === S.speedKey) return;
+    S.speedKey = key;
+    $("#speed").replaceChildren(...rows.map(([label, sec, note, kind]) => h("div", { class: "sp-row", dataset: { kind: kind || "measured" } },
+      h("div", { class: "sp-label" }, h("b", { text: label }), h("small", { text: note })),
+      h("div", { class: "sp-track" }, sec == null ? null : h("span", { style: { width: `${clamp((Math.log10(Math.max(sec, 1e-9)) - lo) / (hi - lo), 0.02, 1) * 100}%` } })),
+      h("b", { class: "sp-val", text: sec == null ? "–" : fmtSec(sec) }))));
+    const news = t.mode === "live" ? 900 : null, check = t.check_ns_cpp ?? t.check_ns_python;
+    setText($("#speedNote"), news && check
+      ? `A bot's order check is about ${(news / (check / 1e9)).toExponential(0).replace("e+", " × 10^")} times faster than the news cadence: the speed comes from never waiting on the network, not from fast news.`
+      : "Bars use a log scale: each step to the right is ten times slower. The order check never waits on the network.");
+  }
+
+  // ================================================================ webhook alerts (#40)
+  const ALERT_KINDS = { ntfy: "Phone (ntfy)", slack: "Slack", discord: "Discord", json: "JSON webhook" };
+  function renderAlerts(s) {
+    const a = s.alerts;
+    $("#alertsCard").hidden = !a;
+    if (!a) return;
+    const key = JSON.stringify(a.targets);
+    $("#alertTest").hidden = !a.active;
+    if (key === S.alertKey) return;
+    S.alertKey = key;
+    $("#alertTargets").replaceChildren(...a.targets.map((t) => h("div", { class: "al-row", dataset: { on: String(t.configured) } },
+      h("span", { class: "al-dot" }),
+      h("b", { text: ALERT_KINDS[t.kind] || t.kind }),
+      h("span", { class: "muted", text: t.configured ? `on · ${t.host}${t.signed ? " · signed" : ""}` : `off · set ${t.env || "a URL"}` }),
+      h("span", { class: "al-res", text: t.configured ? (t.last_result ? `${t.sent} sent · last: ${t.last_result}` : "nothing sent yet") : "" }))));
   }
 
   // ================================================================ controls tab
@@ -1738,6 +2569,9 @@
       S.heroState = null;
       S.prevState = null;
       chartsAnimated = { overview: false, signals: false, timeline: false };
+      if (S.moment || !$("#momentCard").hidden) closeMoment();
+      AI.key = "";
+      AI.shown = "";
       pollHistory();
       pollTransitions();
     }
@@ -1753,8 +2587,10 @@
       hero.classList.remove("flash");
       void hero.offsetWidth;
       hero.classList.add("flash");
+      levelEffects(S.prevState, s.state);
     }
     S.prevState = s.state;
+    renderTabIdentity(s);
     renderTop(s);
     renderNotices(s);
     renderHero(s);
@@ -1765,9 +2601,17 @@
     renderMiniSignals(s);
     renderSignals(s);
     renderNews(s);
+    renderTrending(s);
+    renderAI(s);
+    loadCompare(s);
+    if (S.tab === "timeline") renderCompare(false);
     renderFocusBtn(s);
     renderBots(s);
+    renderGate(s);
+    renderFleet(s);
+    renderSpeed(s);
     renderControls(s);
+    renderAlerts(s);
     renderHow(s);
     renderMiniLegend();
     setText($("#miniSub"), s.mode === "replay" ? "simulated time" : "UTC");
@@ -1848,6 +2692,11 @@
     });
     window.addEventListener("resize", placeIndicator);
     $("#zoomReset")?.addEventListener("click", () => bigChart.resetZoom());
+    $("#momentClose").addEventListener("click", closeMoment);
+    Sound.load();
+    $("#soundToggle").addEventListener("click", () => Sound.toggle());
+    document.addEventListener("pointerdown", () => { if (Sound.on) Sound.audio(); }, { once: true });
+    $("#aiRefresh").addEventListener("click", () => { window.clearTimeout(AI.timer); requestSummary(); });
     wireFocus();
 
     document.addEventListener("click", (e) => {
@@ -1945,6 +2794,46 @@
         selectTab("bots");
         await injectFault("silence_5s");
       }
+    });
+
+    // demo bots: shadow mode, C++ bots
+    $("#shadowToggle").addEventListener("change", async (e) => {
+      const on = e.target.checked;
+      try {
+        await post("/api/bot/shadow", { on });
+        toast(on ? "Shadow mode on" : "Shadow mode off", on ? "The example bot's gate now lets every order through and only counts what it would have blocked. Real strategies start here, before trusting it."
+          : "The gate blocks again.", on ? "warning" : "good", "shield");
+      } catch (err) { e.target.checked = !on; toast("Couldn't switch shadow mode", err.message, "critical"); }
+      pollStatus();
+    });
+    $("#cppStart").addEventListener("click", async () => {
+      const b = $("#cppStart");
+      b.classList.add("busy");
+      try {
+        const r = await post("/api/fleet/cpp-bot");
+        toast(`${r.name} started`, "A separate C++ process (clients/cpp). It starts at “Stop” and follows Veto Sentinel after two good heartbeats.", "good", "cpu");
+      } catch (err) { toast("Couldn't start a C++ bot", err.message, "critical"); }
+      finally { window.setTimeout(() => b.classList.remove("busy"), 600); }
+    });
+    $("#fleet").addEventListener("click", async (e) => {
+      const b = e.target.closest("[data-pid]");
+      if (!b) return;
+      try {
+        await post(`/api/fleet/cpp-bot/${b.dataset.pid}/${b.dataset.how}`);
+        toast(b.dataset.how === "kill" ? "Plug pulled" : "Stopping the bot", b.dataset.how === "kill"
+          ? "The process was killed without warning. Watch it go silent here after 3 seconds." : "It shuts down cleanly and says goodbye.", "warning", "cpu");
+      } catch (err) { toast("Couldn't stop the bot", err.message, "critical"); }
+    });
+
+    $("#alertTest").addEventListener("click", async () => {
+      const b = $("#alertTest");
+      b.classList.add("busy");
+      try {
+        const r = await post("/api/alerts/test");
+        const ok = r.results.filter((x) => x.ok).length;
+        toast(ok === r.results.length ? "Test alert sent" : "Some alerts failed", `${ok} of ${r.results.length} target(s) accepted it.`, ok ? "good" : "critical", "bell");
+      } catch (err) { toast("Couldn't send a test alert", err.message, "critical"); }
+      finally { b.classList.remove("busy"); }
     });
 
     // fault injection

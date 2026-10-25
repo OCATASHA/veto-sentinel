@@ -57,6 +57,38 @@ k = 1.0
 h = 6.0
 alarm_hold_minutes = 60
 
+[ai]
+# Optional plain-English summaries and focus suggestions from Google's Gemini API. Off unless the
+# key is set (put GEMINI_API_KEY in a git-ignored .env file; the run scripts load it).
+# Advisory only: AI text never changes the score, the level or the bus.
+api_key_env = "GEMINI_API_KEY"
+models = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]   # tried in order
+max_calls_per_minute = 20
+
+[alerts]
+# Webhook alerts on every level change and operator action. Each target is skipped unless its
+# environment variable holds a URL (keeps secrets out of this file). At most one alert per target
+# per min_interval_seconds; changes in between are folded into the next one.
+min_interval_seconds = 10
+dashboard_url = ""               # e.g. https://your-host/dashboard, added as a link
+
+[[alerts.webhooks]]
+kind = "ntfy"                    # phone push via the free ntfy app: https://ntfy.sh/<long random topic>
+url_env = "VETOSENTINEL_NTFY_URL"
+
+[[alerts.webhooks]]
+kind = "slack"                   # Slack incoming webhook URL
+url_env = "VETOSENTINEL_SLACK_WEBHOOK"
+
+[[alerts.webhooks]]
+kind = "discord"                 # Discord channel webhook URL
+url_env = "VETOSENTINEL_DISCORD_WEBHOOK"
+
+[[alerts.webhooks]]
+kind = "json"                    # any HTTPS endpoint: full JSON payload, optionally HMAC-signed
+url_env = "VETOSENTINEL_WEBHOOK_URL"
+secret_env = "VETOSENTINEL_WEBHOOK_SECRET"
+
 [state_machine]
 caution_enter = 2.0
 caution_exit = 1.0

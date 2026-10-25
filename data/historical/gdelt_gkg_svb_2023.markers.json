@@ -1,0 +1,15 @@
+{
+  "_note": "Approximate times of public events around the SVB failure, from official press releases and news coverage. Shown on the dashboard timeline for context only: they are not part of the data and the monitor never uses them.",
+  "markers": [
+    {"t": "2023-03-08T21:00:00Z", "label": "SVB announces loss",
+     "note": "After the US close, SVB says it sold bonds at a $1.8bn loss and plans a $2.25bn share sale."},
+    {"t": "2023-03-09T14:30:00Z", "label": "SVB shares collapse",
+     "note": "US market opens. SVB shares end the day down about 60% as depositors pull their money."},
+    {"t": "2023-03-10T16:00:00Z", "label": "SVB closed",
+     "note": "US morning: California regulators close SVB and appoint the FDIC as receiver."},
+    {"t": "2023-03-12T22:15:00Z", "label": "Joint statement",
+     "note": "Sunday evening: Treasury, Fed and FDIC say all SVB depositors will be protected; Signature Bank is closed."},
+    {"t": "2023-03-13T13:30:00Z", "label": "Regional banks fall",
+     "note": "US open: regional bank shares fall sharply; First Republic drops about 60% on the day."}
+  ]
+}

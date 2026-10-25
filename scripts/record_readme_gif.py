@@ -104,11 +104,13 @@ async def record(url: str, password: str, api: httpx.Client, args: argparse.Name
         task = asyncio.create_task(capture())
         await asyncio.sleep(2.0)  # Overview: calm news before the crisis
         await page.click("#tabbtn-bots")
-        await asyncio.sleep(1.2)
+        await asyncio.sleep(0.6)
+        await page.evaluate("window.scrollTo({top: 250, behavior: 'smooth'})")  # heartbeat + order gate
+        await asyncio.sleep(1.4)
         # The demo bot loses its heartbeat... (clicked from script so the page doesn't scroll away
         # from the heartbeat monitor at the top)
         await page.evaluate("document.querySelector('button[data-fault=\"silence_5s\"]').click()")
-        await asyncio.sleep(8.5)  # ...stops itself after 3 s, then recovers on fresh heartbeats
+        await asyncio.sleep(8.5)  # ...stops itself after 3 s (the gate closes), then recovers
         await page.click("#tabbtn-overview")
         await asyncio.sleep(0.8)
         await play_until("HALT", 20)  # the bank news turns: Be careful, then Stop
@@ -151,7 +153,7 @@ def main() -> None:
     ap.add_argument("--port", type=int, default=8891)
     ap.add_argument("--pub-port", type=int, default=5591)
     ap.add_argument("--width", type=int, default=1280)
-    ap.add_argument("--height", type=int, default=780)
+    ap.add_argument("--height", type=int, default=800)
     ap.add_argument("--out-width", type=int, default=960)
     ap.add_argument("--fps", type=int, default=10)
     ap.add_argument("--keep", action="store_true", help="keep the scratch folder (frames, server log)")

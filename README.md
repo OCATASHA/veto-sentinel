@@ -63,6 +63,38 @@ You get an animated welcome screen, then a login page, then the console. The con
 sections (Overview, Warning signals, Timeline, Headlines, Trading bots, Controls, How it works),
 written for non-experts. An **Expert details** switch reveals the technical numbers.
 
+Before a demo, run `./preflight.sh`: it checks the AI models, datasets, the C++ build, free ports,
+GDELT, the Gemini key and alert targets, and says how to fix anything missing.
+
+**Optional settings** go in a git-ignored `.env` file next to the scripts, which they load:
+
+```bash
+GEMINI_API_KEY=...                                    # AI summaries + phrase suggestions (free tier is enough)
+VETOSENTINEL_NTFY_URL=https://ntfy.sh/<long random topic>   # level alerts on your phone (ntfy app)
+VETOSENTINEL_SLACK_WEBHOOK=https://hooks.slack.com/...      # or Slack / Discord / any JSON webhook
+```
+
+### What's in the console
+
+- **Overview:** the level, the reasons, and an "all of these must be true" checklist for relaxing,
+  straight from the state machine. With a Gemini key, an AI summary in plain English (advisory: it
+  never changes the level). The tab title and icon show the level; level changes get a full-screen
+  stamp, and returning to All clear gets a little confetti. Optional sound: heartbeat beeps, a
+  flatline alarm and level chimes.
+- **Timeline:** click any point to see that moment's level, signals, rule, trending words and
+  headlines, and ask the AI to explain it. Pins mark public events (approximate times). On the SVB
+  replay, **Same news, two settings** plots the whole-market and Banks & credit evaluation runs
+  together with each one's first score-driven Stop.
+- **Headlines:** the most negative headlines with how on-topic each is, and **words in the news
+  right now**: terms far more common in the last hour than the week before (an exact two-rate test).
+- **Trading bots:** the heartbeat monitor; the **order gate**, where the example bot's simulated
+  orders pass or bounce off depending on the real `can_submit_order()`; **shadow mode** (count,
+  don't block); **connected bots**, where Python and C++ bots report their own view (start a C++
+  bot, then stop it or pull the plug); and **where the time goes**, measured from a news batch to a
+  bot's order check (about 25 ns in C++, mostly reading the clock).
+- **Controls:** replay, the emergency instruction, and **alerts to your phone or chat** with a test
+  button.
+
 **Login.** The built-in demo account is `oxhack26` (the team has the password). The password is
 stored only as a salted scrypt hash. To use your own credentials:
 
@@ -83,7 +115,7 @@ uv sync                    # core + dev tools: runs with labelled fallback model
 uv sync --extra ml         # optional: FinBERT + MiniLM (~1 GB with torch)
                            # (uv sync is exact: a later plain `uv sync` removes the ml extra again)
 
-uv run pytest              # 119 tests (C++ interop test skips until built)
+uv run pytest              # 175 tests (C++ interop tests skip until built)
 
 # Replay the SYNTHETIC demo fixture with publisher + dashboard + in-process demo client
 uv run vetosentinel replay --config config/default.toml
@@ -182,15 +214,18 @@ src/vetosentinel/
   config.py            typed config (Pydantic); defaults = unvalidated starting parameters
   models.py            Headline, ComponentReading, RiskSnapshot, DecisionRecord, enums
   ingest/              adapter interface + runner (backoff), GDELT, RSS/Atom, NewsAPI, fixture; normalise; dedup
-  features/            backends (FinBERT/MiniLM + labelled fallbacks), panic, drift, intensity, normalise, composite, pipeline
+  features/            backends (FinBERT/MiniLM + labelled fallbacks), panic, drift, intensity, relevance, trending, pipeline
   detect/              ChangeDetector protocol + CUSUM
   engine/              state machine (hysteresis/cooldown/FLATTEN) and Monitor orchestrator
-  bus/                 versioned message schema, ZeroMQ publisher (heartbeat, self-watchdog, demo fault injection)
+  bus/                 versioned message schema, ZeroMQ publisher (heartbeat, self-watchdog, demo faults), fleet reports
   client/              Python SDK: pure StateTracker + threaded VetoSentinelClient
   dashboard/           FastAPI JSON API + login (auth.py) + offline welcome/login and console pages
   evaluation/          replay evaluation report; GDELT GKG historical-fixture builder
+  assistant.py         optional Gemini summaries and phrase suggestions (advisory only)
+  alerts.py            webhook alerts (ntfy, Slack, Discord, signed JSON)
+  preflight.py         demo checklist (./preflight.sh)
   service.py runtime.py cli.py store.py
-clients/cpp/           C++20 SDK (std::atomic state, subscriber + watchdog threads), tests, example
+clients/cpp/           C++20 SDK (std::atomic state, subscriber + watchdog threads), tests, example, sanitize.sh
 fixtures/              synthetic_demo.jsonl (SYNTHETIC, generated by scripts/generate_synthetic_fixture.py)
 scripts/               fixture generator; record_readme_gif.py re-records the GIF above from a real replay
 config/default.toml    all parameters, live adapters

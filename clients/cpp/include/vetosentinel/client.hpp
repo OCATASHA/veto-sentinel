@@ -10,6 +10,12 @@
 //
 // The strategy-facing checks (`current_state`, `can_submit_order`, `position_limit`) only
 // read std::atomic values and the steady clock: no locks, no allocation, no network.
+//
+// Shadow mode (`ClientConfig::shadow`): the gate always allows and counts what it would have
+// blocked; the action hooks (on_caution, on_halt) are not called. `decide()` gives the real answer.
+// Fleet reports: when the monitor advertises a telemetry endpoint, the watchdog thread sends a
+// small JSON report about this client every second (and on state changes) over a ZeroMQ PUSH
+// socket. Never from the order path. Off with `ClientConfig::report = false`.
 // There is NO broker integration: hooks are where a strategy wires its own handling.
 #pragma once
 
@@ -48,6 +54,9 @@ struct ClientConfig {
   bool honor_advertised_timeout = true;  // use min(ours, advertised)
   double caution_position_fraction = 0.25;
   std::int64_t watchdog_period_ms = 50;
+  bool shadow = false;  // count, don't block (see above); never the default
+  bool report = true;   // fleet reports to the advertised telemetry endpoint
+  std::string name;     // shown in the fleet view
 };
 
 // Validated subset of the schema_version 1 message (see docs/MESSAGE_SCHEMA.md).
@@ -63,6 +72,7 @@ struct Message {
   std::string reason;
   std::string data_origin;
   bool fallback_in_use = false;
+  std::string telemetry;  // optional: where to send fleet reports
 };
 
 constexpr std::size_t kMaxMessageBytes = 64 * 1024;
@@ -95,7 +105,14 @@ struct TrackerSnapshot {
   std::optional<State> published_state;
   std::optional<double> risk_score;
   Stats stats;
+  std::optional<double> heartbeat_age_ms = std::nullopt;
+  std::optional<double> bus_latency_ms = std::nullopt;  // publish -> receive of the last valid message
+  std::string telemetry = {};
 };
+
+// "tcp://*:5656" advertised by the monitor -> where to connect, given the endpoint we subscribe
+// to (a wildcard or loopback host means "the host I subscribed to"). Empty if unusable.
+std::string resolve_telemetry(std::string_view advertised, std::string_view sub_endpoint);
 
 // Pure state logic with injected clocks (monotonic ns + wall time); used by Client and tests.
 class StateTracker {
@@ -113,6 +130,7 @@ class StateTracker {
 
   TrackerSnapshot snapshot(std::int64_t now_mono_ns) const;
   const ClientConfig& config() const noexcept { return cfg_; }
+  std::string telemetry_endpoint() const;
 
  private:
   void set_local(State s, std::string reason, std::vector<Transition>& out);
@@ -133,6 +151,7 @@ class StateTracker {
   int consecutive_good_ = 0;
   std::optional<Message> last_message_;
   Stats stats_;
+  std::optional<double> last_latency_ms_;
 };
 
 struct Hooks {
@@ -154,11 +173,19 @@ class Client {
 
   // ---- strategy hot path: atomics + steady clock only
   State current_state() const noexcept;
-  // NORMAL: any order. CAUTION: only position-reducing orders. HALT/FLATTEN: none.
+  // The real answer: NORMAL any order; CAUTION only position-reducing orders; HALT/FLATTEN none.
+  bool decide(bool opening = true) const noexcept;
+  // The order gate: decide(), except in shadow mode, where it allows and counts would-blocks.
   bool can_submit_order(bool opening = true) const noexcept;
   double position_limit(double normal_limit) const noexcept;
 
   TrackerSnapshot snapshot() const;
+  std::uint64_t would_block() const noexcept { return would_block_.load(std::memory_order_relaxed); }
+  // Average cost of one decide() call, measured over 1M calls on the watchdog thread (0 = not yet).
+  double check_ns() const noexcept { return check_ns_.load(std::memory_order_relaxed); }
+  // The fleet report this client sends (JSON), e.g. for logging or tests.
+  std::string report_json(bool bye = false);
+  void measure_check();
 
  private:
   void subscriber_loop();
@@ -168,6 +195,11 @@ class Client {
   ClientConfig cfg_;
   Hooks hooks_;
   StateTracker tracker_;
+  std::string client_id_;
+  std::uint64_t report_seq_ = 0;
+  mutable std::atomic<std::uint64_t> would_block_{0};
+  std::atomic<double> check_ns_{0.0};
+  std::atomic<std::uint64_t> bench_sink_{0};
   std::atomic<bool> stop_{false};
   std::thread sub_thread_;
   std::thread wd_thread_;

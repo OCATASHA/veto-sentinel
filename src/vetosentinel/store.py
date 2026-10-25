@@ -164,6 +164,33 @@ class Store:
                              components, headline_ids FROM decisions WHERE run_id = ? AND changed
                              ORDER BY as_of DESC LIMIT ?""", [run_id, limit])
 
+    def moment(self, run_id: str, t: datetime) -> dict[str, Any] | None:
+        """The assessment in force at ``t``: the last tick at or before it, with the decision made
+        then, its feature readings and the last level change before it."""
+        rows = self.query("""SELECT as_of, risk_score, state, monitor_ready, degraded, degraded_reasons,
+                             not_ready_reasons, panic_z, drift_z, volume_z, cusum_stat, cusum_alarm_active,
+                             top_headline_ids FROM risk_scores WHERE run_id = ? AND as_of <= ?
+                             ORDER BY as_of DESC, rowid DESC LIMIT 1""", [run_id, _ts(t)])
+        if not rows:
+            return None
+        m = rows[0]
+        for k in ("degraded_reasons", "not_ready_reasons", "top_headline_ids"):
+            m[k] = json.loads(m[k] or "[]")
+        at = _ts(datetime.fromisoformat(m["as_of"]))
+        d = self.query("""SELECT prev_state, new_state, changed, rule, reason, changepoint FROM decisions
+                          WHERE run_id = ? AND as_of = ? ORDER BY wall_ts DESC, rowid DESC LIMIT 1""", [run_id, at])
+        m["decision"] = d[0] if d else None
+        if m["decision"] and m["decision"]["changepoint"]:
+            m["decision"]["changepoint"] = json.loads(m["decision"]["changepoint"])
+        m["features"] = {r.pop("component"): r for r in self.query(
+            """SELECT component, raw, z, sample_count, baseline_center, baseline_scale, reason FROM features
+               WHERE run_id = ? AND as_of = ? ORDER BY rowid DESC""", [run_id, at])[::-1]}
+        last = self.query("""SELECT as_of, prev_state, new_state, rule, reason FROM decisions
+                             WHERE run_id = ? AND changed AND as_of <= ? ORDER BY as_of DESC, rowid DESC LIMIT 1""",
+                          [run_id, at])
+        m["last_change"] = last[0] if last else None
+        return m
+
     def headlines_by_id(self, run_id: str, ids: list[str]) -> list[dict[str, Any]]:
         if not ids:
             return []

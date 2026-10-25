@@ -15,7 +15,7 @@
 
 <header class="topbar">
   <a class="brand" href="/dashboard" aria-label="Veto Sentinel console">
-    <svg viewBox="0 0 64 64" aria-hidden="true"><path class="b-shield" d="M32 5 55 14v18c0 13.6-10.2 23.8-23 27C19.2 55.8 9 45.6 9 32V14z"/><path class="b-pulse" d="M17 34h8l4-9 6 16 4-8h8"/></svg>
+    <svg viewBox="0 0 64 64" aria-hidden="true"><path class="b-shield" d="M32 5 55 14v18c0 13.6-10.2 23.8-23 27C19.2 55.8 9 45.6 9 32V14z"/><path class="b-pulse" d="M17 34h8l4-9 6 16 4-8h8"/><path class="b-flat" d="M15 34h34"/></svg>
     <span>Veto<b>Sentinel</b></span>
   </a>
   <button class="top-status" id="topStatus" type="button" data-goto="overview" aria-label="Current level">
@@ -34,6 +34,7 @@
     <span class="track" aria-hidden="true"><span class="knob"></span></span>
     <span class="switch-label">Expert details</span>
   </label>
+  <button class="icon-btn" id="soundToggle" type="button" aria-pressed="false" aria-label="Sound off: click for heartbeat beeps and level chimes" title="Sound (off)"></button>
   <button class="icon-btn" id="themeToggle" type="button" aria-label="Switch between light and dark theme"></button>
   <div class="user">
     <span class="avatar" id="avatar" aria-hidden="true">?</span>
@@ -82,9 +83,16 @@
           <h1 id="heroTitle">Connecting…</h1>
           <p class="lead" id="heroDesc">Fetching the latest assessment.</p>
           <ul class="why" id="heroWhy"></ul>
+          <div class="ai-box" id="aiBox" hidden aria-live="polite">
+            <div class="ai-head"><span class="ai-ico" data-icon="sparkle"></span><b>AI summary</b><span class="ai-meta" id="aiMeta"></span>
+              <button class="icon-btn small" type="button" id="aiRefresh" aria-label="Write a fresh AI summary" title="Write a fresh summary" data-icon="restart"></button></div>
+            <p class="ai-text" id="aiText"></p>
+          </div>
           <div class="calm" id="calm" hidden>
             <div class="calm-head"><span class="calm-ico" data-icon="clock"></span><b id="calmTitle"></b><span class="calm-time" id="calmTime"></span></div>
             <div class="calm-track" id="calmTrack"><span id="calmBar"></span></div>
+            <p class="relax-h" id="relaxHead" hidden></p>
+            <ul class="relax" id="relaxList" hidden></ul>
             <p class="calm-note" id="calmNote"></p>
           </div>
         </div>
@@ -105,6 +113,7 @@
         <ul class="perms" id="perms"></ul>
         <div class="size-row"><span>Largest position allowed</span><b id="sizeText">–</b></div>
         <div class="meter"><span id="sizeBar"></span></div>
+        <div class="gate-box mini"><canvas id="gateMini" role="img" aria-label="Simulated orders from the example bot passing or bouncing off the order gate"></canvas></div>
       </article>
 
       <article class="card span-8">
@@ -173,9 +182,20 @@
       <article class="card span-12">
         <div class="card-head"><h2>Risk score over time</h2><button class="btn ghost small" type="button" id="zoomReset" hidden>Reset zoom</button><span class="sub">simulated time · background colour = level at that moment</span></div>
         <div class="chart-box big"><canvas id="bigChart" role="img" aria-label="Risk score over time with level shading. Click, then use the arrow keys to step through readings."></canvas></div>
-        <p class="caption">Scroll on the chart to zoom in, drag to move along, double-click to zoom out. Click it, then use ← → to step through every reading (Shift = one hour).</p>
+        <p class="caption"><b>Click any point</b> to see what was going on then. Scroll to zoom in, drag to move along, double-click to zoom out; ← → step through every reading (Shift = one hour), Enter opens it.</p>
         <div class="legend" id="bigLegend"></div>
         <div class="table-view" id="tableView" hidden></div>
+      </article>
+      <article class="card span-12 moment" id="momentCard" hidden>
+        <div class="card-head"><h2 id="momentTitle">This moment</h2><span class="sub" id="momentSub"></span>
+          <button class="icon-btn small" type="button" id="momentClose" aria-label="Close this moment" data-icon="x"></button></div>
+        <div class="moment-body" id="momentBody"></div>
+      </article>
+      <article class="card span-12" id="compareCard" hidden>
+        <div class="card-head"><h2>Same news, two settings</h2><span class="sub" id="compareSub">pre-computed evaluation runs of this exact data</span></div>
+        <div class="chart-box big"><canvas id="compareChart" role="img" aria-label="Risk score of the same replay computed with two settings"></canvas></div>
+        <div class="legend" id="compareLegend"></div>
+        <p class="caption" id="compareNote"></p>
       </article>
       <article class="card span-12">
         <div class="card-head"><h2>What happened, step by step</h2><span class="sub">newest first</span></div>
@@ -188,6 +208,11 @@
   <section class="panel" id="tab-news" role="tabpanel" aria-labelledby="tabbtn-news" hidden>
     <div class="grid">
       <div class="tiles span-12" id="newsTiles"></div>
+      <article class="card span-12">
+        <div class="card-head"><h2>Words in the news right now</h2><button class="help" type="button" data-help="trending" aria-label="How are trending words found?">?</button></div>
+        <div class="trend" id="trending"></div>
+        <p class="caption" id="trendNote">Words and phrases that turn up far more often in the last hour's headlines than in the week before.</p>
+      </article>
       <article class="card span-12">
         <div class="card-head"><h2>Headlines pushing negativity up</h2><button class="help" type="button" data-help="headlines" aria-label="About these headlines">?</button></div>
         <p class="caption top" id="newsCaption">The most negative headlines from the last hour, as scored by the AI. A longer, redder bar means the headline sounds more negative.</p>
@@ -216,6 +241,19 @@
         <p class="bot-desc" id="botDesc"></p>
         <ul class="perms" id="botPerms"></ul>
       </article>
+      <article class="card span-12" id="gateCard">
+        <div class="card-head"><h2>Orders through the gate</h2><span class="sub">simulated orders from the example bot, each checked with the real SDK call <code>can_submit_order()</code></span>
+          <label class="switch small" id="shadowSwitch" hidden title="Shadow mode: the gate never blocks, it only counts what it would have blocked"><input type="checkbox" id="shadowToggle"><span class="track" aria-hidden="true"><span class="knob"></span></span><span class="switch-label">Shadow mode</span></label></div>
+        <div class="gate-box"><canvas id="gateCanvas" role="img" aria-label="Simulated orders from the example bot passing or bouncing off the order gate"></canvas></div>
+        <div class="gate-stats" id="gateStats"></div>
+        <p class="caption" id="gateNote">Top lane: orders that open a position. Bottom lane: orders that reduce one. “Be careful” closes the top lane; “Stop” closes both. Nothing is sent anywhere: there is no broker.</p>
+      </article>
+      <article class="card span-12" id="fleetCard">
+        <div class="card-head"><h2>Connected bots</h2><span class="sub">each bot reports its own view every second</span>
+          <button class="btn small" type="button" id="cppStart" hidden><span data-icon="cpu"></span>Start a C++ bot</button></div>
+        <div class="fleet" id="fleet"></div>
+        <p class="caption">Reports travel on their own channel, never on the order path. A bot that stops reporting goes grey after 3 seconds; that is what a crash looks like from here. Started bots are the example C++ strategy in <code>clients/cpp</code>.</p>
+      </article>
       <article class="card span-12">
         <div class="card-head"><h2>How bots stay safe</h2></div>
         <ol class="steps3">
@@ -223,6 +261,11 @@
           <li style="--i:1"><span class="step-ico" data-icon="bolt"></span><b>The bot checks its own copy before every order</b><p>That check takes nanoseconds and never waits on the network.</p></li>
           <li style="--i:2"><span class="step-ico" data-icon="shield"></span><b>Anything odd? The bot stops itself</b><p>No heartbeat for 3 seconds, a garbled or missing message &rarr; it stops trading until two good heartbeats arrive.</p></li>
         </ol>
+      </article>
+      <article class="card span-12" id="speedCard">
+        <div class="card-head"><h2>Where the time goes</h2><span class="sub">measured on this machine, from a news batch to a bot's order check · log scale</span></div>
+        <div class="speed" id="speed"></div>
+        <p class="caption" id="speedNote"></p>
       </article>
       <article class="card span-12">
         <div class="card-head"><h2>Try to break it</h2><span class="sub">safe demo faults &mdash; nothing real is affected</span></div>
@@ -299,6 +342,12 @@
         </div>
         <p class="op-msg" id="opMsg" role="status"></p>
       </article>
+      <article class="card span-12" id="alertsCard">
+        <div class="card-head"><h2><span data-icon="bell"></span> Alerts to your phone or chat</h2><span class="sub">a message on every level change and operator action</span>
+          <button class="btn small" type="button" id="alertTest" hidden>Send a test alert</button></div>
+        <div class="alerts" id="alertTargets"></div>
+        <p class="caption" id="alertNote">Targets switch on when their environment variable holds a URL, for example <code>VETOSENTINEL_NTFY_URL=https://ntfy.sh/&lt;a long random topic&gt;</code> for phone pushes through the free ntfy app, or a Slack or Discord webhook. Put it in the <code>.env</code> file next to the run scripts and restart. At most one alert per 10 seconds per target; changes in between are folded into the next one.</p>
+      </article>
     </div>
   </section>
 
@@ -342,6 +391,10 @@
     <label class="fd-field"><span>Topics, separated by commas</span>
       <input type="text" id="focusText" maxlength="300" autocomplete="off" spellcheck="false" placeholder="e.g. OPEC, crude oil supply, refineries, oil tankers">
     </label>
+    <div class="fd-ai" id="focusAI" hidden>
+      <button class="btn ghost small" type="button" id="focusSuggest"><span data-icon="sparkle"></span>Suggest more phrases with AI</button>
+      <div class="fd-sugg" id="focusSugg" aria-live="polite"></div>
+    </div>
     <label class="fd-field"><span>Other news still counts <b id="focusBgVal">5%</b></span>
       <input type="range" id="focusBg" min="0" max="30" step="1" value="5">
     </label>

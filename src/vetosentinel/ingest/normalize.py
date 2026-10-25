@@ -57,9 +57,14 @@ def clean_headline(text: str) -> str:
     return _WS.sub(" ", text).strip()
 
 
+def strip_source_suffix(text: str) -> str:
+    """Drop a trailing " - Source" / " | Site name" (syndication and page-title suffixes)."""
+    return _SUFFIX.sub("", text)
+
+
 def text_fingerprint(text: str) -> str:
     t = clean_headline(text).lower()
-    t = _SUFFIX.sub("", t)
+    t = strip_source_suffix(t)
     t = _NONWORD.sub(" ", t)
     t = _WS.sub(" ", t).strip()
     return hashlib.sha256(t.encode()).hexdigest()[:16]

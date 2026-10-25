@@ -14,7 +14,7 @@ from vetosentinel.features.backends import load_embedder, load_sentiment
 from vetosentinel.features.cache import CachedEmbedder, CachedSentiment, ModelCache
 from vetosentinel.features.pipeline import FeaturePipeline
 from vetosentinel.ingest.base import AdapterRunner, FetchResult
-from vetosentinel.ingest.fixture import FixtureAdapter
+from vetosentinel.ingest.fixture import FixtureAdapter, load_markers
 from vetosentinel.ingest.gdelt import GdeltDocAdapter
 from vetosentinel.ingest.gdelt_gkg_live import GdeltGkgLiveAdapter
 from vetosentinel.ingest.gkg import DEFAULT_THEMES
@@ -95,6 +95,7 @@ class ReplayController:
         self.playing = False
         self.finished = False
         self.tick = timedelta(minutes=settings.replay.tick_minutes)
+        self.markers = load_markers(fixture_path)  # dashboard context only (see load_markers)
         self._new_monitor()
 
     def _new_monitor(self) -> None:
@@ -192,7 +193,7 @@ class ReplayController:
                 "tick_minutes": self.tick.total_seconds() / 60, "fixture": self.fixture_path,
                 "data_origin": str(meta.data_origin), "synthetic": meta.is_synthetic,
                 "fixture_title": meta.title, "fixture_warning": meta.raw.get("warning", ""),
-                "scenarios": meta.scenarios}
+                "scenarios": meta.scenarios, "markers": self.markers}
 
 
 class LiveController:

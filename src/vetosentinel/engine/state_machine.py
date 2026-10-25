@@ -64,6 +64,7 @@ class StateMachine:
         self._last_news: float | None = None
         self._exit_to: RiskState | None = None  # level the current cooling-off would relax to
         self._last_as_of: datetime | None = None
+        self._last_inp: EngineInput | None = None
         self.flatten_info: dict[str, Any] | None = None
 
     @property
@@ -76,6 +77,7 @@ class StateMachine:
             raise ValueError(f"as_of went backwards: {inp.as_of} < {self._last_as_of}")
         self._last_as_of = inp.as_of
         self._last_news = self._news_marker(inp)
+        self._last_inp = inp
         prev = self.state
 
         if self.state is RiskState.FLATTEN:
@@ -181,6 +183,42 @@ class StateMachine:
                 "total_s": self.cooldown.total_seconds(),
                 # no new news assessed since the start yet: it won't relax until there is
                 "needs_newer_news": not self._has_newer_news()}
+
+    def exit_checklist(self, now: datetime) -> dict[str, Any] | None:
+        """Every condition the next relax step needs, checked against the last input (rule 4).
+
+        The same tests as ``step``: a ready monitor, R below the exit threshold, no change-point
+        alarm or degraded data that would hold the level, the calm period, and newer news since it
+        began. None in NORMAL (nothing to relax) or before the first step.
+        """
+        inp = self._last_inp
+        if inp is None or self.state is RiskState.NORMAL:
+            return None
+        if self.state is RiskState.FLATTEN:
+            return {"from": str(self.state), "next_state": str(RiskState.HALT),
+                    "items": [{"key": "operator", "ok": False}]}
+        c = self.cfg
+        halt = self.state is RiskState.HALT
+        nxt = RiskState.CAUTION if halt else RiskState.NORMAL
+        score = inp.risk_score
+        ready = inp.monitor_ready and score is not None
+        limit = c.halt_exit if halt else c.caution_exit
+        cp = inp.changepoint
+        alarm = bool(c.changepoint_escalates and cp is not None and cp.alarm_active)
+        # an alarm means at least CAUTION, and HALT while R >= caution_enter
+        cp_holds = alarm and (not halt or (score is not None and score >= c.caution_enter))
+        data_holds = inp.degraded and RiskState(c.degraded_floor).severity > nxt.severity
+        cd = self.cooldown_status(now)
+        items = [
+            {"key": "ready", "ok": ready, "reasons": list(inp.not_ready_reasons)},
+            {"key": "score", "ok": ready and score is not None and score < limit, "value": score, "limit": limit},
+            {"key": "changepoint", "ok": not cp_holds, "active": alarm},
+            {"key": "data", "ok": not data_holds, "reasons": list(inp.degraded_reasons)},
+            {"key": "calm", "ok": cd is not None and cd["remaining_s"] <= 0, "started": cd is not None,
+             "minutes": c.cooldown_minutes},
+            {"key": "news", "ok": cd is not None and not cd["needs_newer_news"], "started": cd is not None},
+        ]
+        return {"from": str(self.state), "next_state": str(nxt), "items": items}
 
     # ------------------------------------------------------------------ operator path
     def force_flatten(self, as_of: datetime, operator: str, reason: str) -> DecisionRecord:

@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import secrets
 import threading
+import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -82,6 +83,8 @@ class Monitor:
         self._last_eval: datetime | None = None
         self._cp_t: datetime | None = None  # news time of the last CUSUM update
         self._focus_meta: dict[str, Any] = {}
+        self._trend_cache: tuple[Any, list[dict[str, Any]], float] | None = None
+        self.tick_ms: float | None = None  # wall time of the last decision (speed budget)
         if coverage_start is not None:
             pipeline.intensity.set_coverage_start(coverage_start)
         store.start_run(self.run_id, mode, data_origin, settings.model_dump(mode="json"),
@@ -170,6 +173,11 @@ class Monitor:
         with self.lock:
             return self.sm.cooldown_status(self.clock.now())
 
+    def exit_checklist(self) -> dict[str, Any] | None:
+        """What the next relax step still needs (StateMachine.exit_checklist), for operators."""
+        with self.lock:
+            return self.sm.exit_checklist(self.clock.now())
+
     def eval_time(self, now: datetime) -> datetime:
         """Time the news is assessed at: now, or - if a source reports how far its data is complete
         (GDELT publishes with a lag) - that point, so late news is never mistaken for a quiet hour.
@@ -196,6 +204,7 @@ class Monitor:
         with self.lock:
             now = self.clock.now()
             self._ingest(now)
+            t0 = time.perf_counter()  # the decision itself: features, score, change point, state, store
             t_eval = self.eval_time(now)
             self._last_eval = t_eval
             snap = self.pipeline.compute(t_eval)
@@ -223,6 +232,7 @@ class Monitor:
             self.store.add_tick(self.run_id, snap, decision, cp.statistic, cp.alarm_active)
             self._last_snapshot, self._last_decision = snap, decision
             self.counters["ticks"] += 1
+            self.tick_ms = (time.perf_counter() - t0) * 1000
             self.pipeline.prune(t_eval)
             if len(self._headline_cache) > 20_000:
                 self._prune_headline_cache(now)
@@ -288,6 +298,23 @@ class Monitor:
     def focus_info(self) -> dict[str, Any]:
         with self.lock:
             return {**self.pipeline.focus_info(self._last_eval), **self._focus_meta}
+
+    # ------------------------------------------------------------------ trending words (explanation only)
+    def trending(self) -> list[dict[str, Any]]:
+        """Trending words as of the current assessment. Cached per news time and weights, and
+        recomputed at most every 2 s while a fast replay moves the news time on."""
+        with self.lock:
+            key = (self._last_eval, self.pipeline.weights_version)
+            c, now = self._trend_cache, time.monotonic()
+            if c is not None and (c[0] == key or (c[0][1] == key[1] and now - c[2] < 2.0)):
+                return c[1]
+            out = self.pipeline.trending_words(self._last_eval)
+            self._trend_cache = (key, out, now)
+            return out
+
+    def trending_at(self, t: datetime) -> list[dict[str, Any]]:
+        with self.lock:
+            return self.pipeline.trending_words(t)
 
     # ------------------------------------------------------------------ operator FLATTEN (two-step)
     def request_flatten(self, operator: str, reason: str) -> dict[str, Any]:

@@ -86,6 +86,25 @@ This is a hackathon prototype. Each item below is a known gap, not a hidden one.
   `VETOSENTINEL_OPERATOR_TOKEN` is set, control endpoints also need `X-Operator-Token`, which the
   page does not send, so the controls become read-only. The server binds to 127.0.0.1 by default.
 
+## Explanations and extras
+- **AI summaries (Gemini)** are optional and advisory. They can be wrong or incomplete, and they
+  depend on a third-party service, its availability and its free-tier limits. When on, the current
+  level, scores and up to five headlines are sent to Google. A summary of a past moment uses the
+  focus in force now, not then. The API key lives in a git-ignored `.env`; anyone with the key can
+  use its quota.
+- **Trending words** and **event pins** are explanations only. Trending words come from a
+  significance test on word counts, so common words can appear by chance and a story worded many
+  ways can be missed. Event pin times are approximate, from public reporting, and the monitor never
+  uses them.
+- **"Same news, two settings"** shows only pre-computed evaluation runs of the exact same file.
+- **Fleet reports** are unauthenticated, like the bus: anything that can reach the port can add a
+  fake bot to the list (display only). Reported check costs are measured by each client on its own
+  machine and include reading the clock.
+- **Shadow mode** disables protection by design. It is never the default and is shown in the fleet
+  view; the dashboard's toggle only affects its own example bot.
+- **Webhook alerts** send the level, score and reasons to outside services you configure (an ntfy
+  topic is readable by anyone who knows its name: use a long random one).
+
 ## Engineering
 - Docker images and compose were written but **not built or run**: Docker was not installed in the
   development environment.

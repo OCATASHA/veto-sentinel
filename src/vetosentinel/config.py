@@ -8,6 +8,7 @@ held-out event period. Override them via a TOML file (see ``config/default.toml`
 from __future__ import annotations
 
 import math
+import re
 import tomllib
 from pathlib import Path
 from typing import Literal
@@ -156,6 +157,17 @@ class BusConfig(_Strict):
     # Demo-only fault injection endpoints (silence heartbeats, malformed message, seq gap).
     allow_fault_injection: bool = True
     top_headlines: int = Field(default=5, ge=0, le=20)
+    # Reverse channel for the fleet view: bots report their own state here (display only).
+    # "auto" = the publish port + 100 on the same host; "" turns it off. Advertised on the bus.
+    telemetry_endpoint: str = "auto"
+
+    def telemetry_bind(self) -> str | None:
+        if not self.telemetry_endpoint:
+            return None
+        if self.telemetry_endpoint != "auto":
+            return self.telemetry_endpoint
+        m = re.fullmatch(r"(tcp://[^:/]+):(\d+)", self.pub_endpoint)
+        return f"{m.group(1)}:{int(m.group(2)) + 100}" if m else None
 
     @model_validator(mode="after")
     def _check(self) -> BusConfig:
@@ -218,6 +230,39 @@ class ReplayConfig(_Strict):
     fast_forward_days: float = Field(default=0.0, ge=0)
 
 
+class AIConfig(_Strict):
+    """Optional AI assistant (Google Gemini): plain-English summaries and focus suggestions.
+
+    Active only when the API key environment variable is set. Advisory only: nothing it writes
+    reaches the risk score, the state machine or the signal bus."""
+    enabled: bool = True
+    api_key_env: str = "GEMINI_API_KEY"
+    endpoint: str = "https://generativelanguage.googleapis.com/v1beta"
+    # Tried in order: the next one is used when a model is overloaded, retired or times out.
+    models: list[str] = Field(default_factory=lambda: ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"],
+                              min_length=1)
+    timeout_seconds: float = Field(default=15.0, gt=0)
+    max_calls_per_minute: int = Field(default=20, ge=1)  # protects the free-tier quota
+
+
+class WebhookConfig(_Strict):
+    kind: Literal["json", "slack", "discord", "ntfy"] = "json"
+    url: str = ""  # or, better, url_env: the name of an environment variable holding the URL
+    url_env: str = ""
+    secret_env: str = ""  # json only: HMAC-SHA256 signing secret (environment variable name)
+    name: str = ""
+
+
+class AlertsConfig(_Strict):
+    """Outbound webhook alerts on level changes and operator actions. A target without a URL is
+    skipped, so nothing is sent unless someone sets one."""
+    enabled: bool = True
+    min_interval_seconds: float = Field(default=10.0, ge=0)  # per target; changes in between are folded in
+    timeout_seconds: float = Field(default=5.0, gt=0)
+    dashboard_url: str = ""  # optional link added to alerts
+    webhooks: list[WebhookConfig] = Field(default_factory=list)
+
+
 class Settings(_Strict):
     panic: PanicConfig = Field(default_factory=PanicConfig)
     drift: DriftConfig = Field(default_factory=DriftConfig)
@@ -231,6 +276,8 @@ class Settings(_Strict):
     ingest: IngestConfig = Field(default_factory=IngestConfig)
     service: ServiceConfig = Field(default_factory=ServiceConfig)
     replay: ReplayConfig = Field(default_factory=ReplayConfig)
+    ai: AIConfig = Field(default_factory=AIConfig)
+    alerts: AlertsConfig = Field(default_factory=AlertsConfig)
     parameter_status: str = PARAMETER_STATUS
 
 

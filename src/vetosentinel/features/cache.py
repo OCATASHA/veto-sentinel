@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 import threading
+import time
 from pathlib import Path
 
 import numpy as np
@@ -50,13 +51,16 @@ class CachedSentiment:
     def __init__(self, backend, cache: ModelCache):
         self.backend, self.cache = backend, cache
         self.implementation, self.is_fallback = backend.implementation, backend.is_fallback
+        self.scored, self.score_s = 0, 0.0  # headlines the model itself scored (cache misses), and its time
 
     def negative_probs(self, texts: list[str]) -> list[float]:
         keys = [_key(t) for t in texts]
         have = self.cache._get("sentiment", "p", self.implementation, list(set(keys)))
         todo = sorted({k: t for k, t in zip(keys, texts, strict=True) if k not in have}.items())
         if todo:
+            t0 = time.perf_counter()
             probs = self.backend.negative_probs([t for _, t in todo])
+            self.scored, self.score_s = self.scored + len(todo), self.score_s + time.perf_counter() - t0
             fresh = {k: float(p) for (k, _), p in zip(todo, probs, strict=True)}
             self.cache._put("sentiment", self.implementation, list(fresh.items()))
             have.update(fresh)
@@ -67,6 +71,7 @@ class CachedEmbedder:
     def __init__(self, backend, cache: ModelCache):
         self.backend, self.cache = backend, cache
         self.implementation, self.is_fallback, self.dim = backend.implementation, backend.is_fallback, backend.dim
+        self.scored, self.score_s = 0, 0.0
 
     def embed(self, texts: list[str]) -> np.ndarray:
         keys = [_key(t) for t in texts]
@@ -74,7 +79,9 @@ class CachedEmbedder:
                 for k, v in self.cache._get("embedding", "vec", self.implementation, list(set(keys))).items()}
         todo = sorted({k: t for k, t in zip(keys, texts, strict=True) if k not in have}.items())
         if todo:
+            t0 = time.perf_counter()
             vecs = np.asarray(self.backend.embed([t for _, t in todo]), dtype=np.float32)
+            self.scored, self.score_s = self.scored + len(todo), self.score_s + time.perf_counter() - t0
             fresh = {k: vecs[i] for i, (k, _) in enumerate(todo)}
             self.cache._put("embedding", self.implementation, [(k, v.tobytes()) for k, v in fresh.items()])
             have.update(fresh)

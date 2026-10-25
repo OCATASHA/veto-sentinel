@@ -91,6 +91,27 @@ def load_fixture(path: str | Path) -> tuple[FixtureMeta, list[tuple[datetime, Ra
     return meta, items, malformed
 
 
+def load_markers(path: str | Path) -> list[dict[str, str]]:
+    """Event markers for a fixture's timeline, from an optional sidecar ``<stem>.markers.json``:
+    ``{"markers": [{"t": ISO, "label": "...", "note": "..."}]}``. Context for people reading the
+    dashboard only (e.g. when a bank was closed); the monitor never uses them. Bad entries are
+    skipped; a missing or unreadable sidecar means no markers."""
+    side = Path(path).with_suffix(".markers.json")
+    try:
+        raw = json.loads(side.read_text(encoding="utf-8")).get("markers", [])
+    except (OSError, ValueError, AttributeError):
+        return []
+    out = []
+    for m in raw if isinstance(raw, list) else []:
+        if not isinstance(m, dict) or not isinstance(m.get("label"), str):
+            continue
+        ts, _q = parse_timestamp(m.get("t"))
+        if ts is None:
+            continue
+        out.append({"t": ts.isoformat(), "label": m["label"][:40], "note": str(m.get("note", ""))[:300]})
+    return sorted(out, key=lambda x: x["t"])
+
+
 class FixtureAdapter:
     def __init__(self, path: str | Path, name: str = "fixture"):
         self.name = name
